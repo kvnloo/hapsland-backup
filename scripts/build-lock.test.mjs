@@ -81,7 +81,7 @@ test("unresolved owned descendants preserve both lock and lease for audit", () =
     assert.equal(typeof lease.token, "string")
   }))
 
-test("registered detached task reports failure and releases custody after confirmed shutdown", () =>
+test("registered detached task releases custody only after platform-confirmed shutdown", () =>
   fixture(async (root) => {
     let child, closed
     try {
@@ -111,16 +111,36 @@ test("registered detached task reports failure and releases custody after confir
             })
           })
         }),
-        /Registered build task group outlived/
+        (error) => {
+          assert.match(error.message, /Registered build task group outlived/)
+          assert.equal(error.groupUnresolved, process.platform !== "linux")
+          return true
+        }
       )
-      await assert.rejects(access(join(root, ".test-runs/product-build/lock")), { code: "ENOENT" })
-      await assert.rejects(access(join(root, ".test-runs/product-build/lease.json")), { code: "ENOENT" })
+      const directory = join(root, ".test-runs/product-build")
+      if (process.platform === "linux") {
+        await assert.rejects(access(join(directory, "lock")), { code: "ENOENT" })
+        await assert.rejects(access(join(directory, "lease.json")), { code: "ENOENT" })
+      } else {
+        // Non-Linux identity evidence cannot authorize automatic group teardown.
+        const owner = JSON.parse(await readFile(join(directory, "lock/owner.json")))
+        const lease = JSON.parse(await readFile(join(directory, "lease.json")))
+        assert.equal(owner.pid, process.pid)
+        assert.equal(lease.pid, owner.pid)
+        assert.equal(typeof lease.token, "string")
+        assert.doesNotThrow(() => process.kill(-child.pid, 0))
+      }
     } finally {
       child?.kill("SIGTERM")
       await closed
     }
     assert.throws(() => process.kill(-child.pid, 0), { code: "ESRCH" })
-    await withBuildLock(root, async () => {})
+    if (process.platform === "linux") await withBuildLock(root, async () => {})
+    else {
+      // Manual child shutdown does not itself reconcile the retained custody.
+      await access(join(root, ".test-runs/product-build/lock/owner.json"))
+      await access(join(root, ".test-runs/product-build/lease.json"))
+    }
   }))
 
 test("unreadable group evidence keeps checkout ownership for audit", () =>

@@ -144,13 +144,17 @@ test("shell interposition preserves actual group for nested producer deadlines",
   const begin = Date.now()
   try {
     await assert.rejects(
-      runBuildProcess("/bin/sh", ["-c", '"$0" --input-type=module -e "$1"', process.execPath, script], {
-        timeout: 2000,
-        stdio: "ignore",
-        onSpawn: (identity) => {
-          outer = identity
+      runBuildProcess(
+        "/bin/sh",
+        ["-c", '"$0" --input-type=module -e "$1"; status=$?; exit "$status"', process.execPath, script],
+        {
+          timeout: 2000,
+          stdio: "ignore",
+          onSpawn: (identity) => {
+            outer = identity
+          }
         }
-      }),
+      ),
       /Build process (?:failed|group outlived)/
     )
     const nested = JSON.parse(await readFile(evidence, "utf8"))
