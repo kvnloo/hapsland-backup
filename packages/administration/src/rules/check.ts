@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
 import { discoverPhysicalWorkingTreeRoot, rootRelativePath } from "@hapsland/native-observation/repository/root"
 import { ReviewSettingsService, settingsSource } from "@hapsland/review-definition/runtime/review-settings"
+import type { ReviewSettingsSnapshot } from "@hapsland/review-definition/runtime/review-settings"
 import { CredentialResolver } from "@hapsland/credential-storage/credentials/owner"
 import { reviewDecisionModelLayer } from "@hapsland/review-execution/review-providers/live"
 import {
@@ -25,10 +26,16 @@ export interface RuleCheckRequest {
   readonly id?: string | undefined
   readonly ids?: ReadonlyArray<string> | undefined
 }
+/** Only an administration plan can construct this trusted, independently policy-resolved context. */
+export interface EffectiveRuleCandidate {
+  readonly settings: ReviewSettingsSnapshot
+  readonly stillCurrent: Effect.Effect<boolean, unknown>
+}
 
 const resolveRuleCheckContext = Effect.fn("Rules.resolveCheckContext")(function* (
   request: RuleCheckRequest,
-  cwd: string
+  cwd: string,
+  candidate: EffectiveRuleCandidate | undefined
 ) {
   if (!Number.isSafeInteger(request.line) || request.line < 1)
     return yield* Effect.fail(new Error("--line must be a positive one-based integer."))
@@ -37,7 +44,10 @@ const resolveRuleCheckContext = Effect.fn("Rules.resolveCheckContext")(function*
   if (path === undefined) return yield* Effect.fail(new Error("--path must stay inside the current Git working tree."))
   const userConfigPath = Option.getOrUndefined(yield* Config.option(Config.NonEmptyString("REVIEW_USER_CONFIG_PATH")))
   const settingsService = yield* ReviewSettingsService
-  const settings = yield* settingsService.capture(settingsSource(repository.root, userConfigPath))
+  const settings =
+    candidate?.settings ?? (yield* settingsService.capture(settingsSource(repository.root, userConfigPath)))
+  if (settings.source.root !== repository.root)
+    return yield* Effect.fail(new Error("Candidate settings must belong to the selected physical repository."))
   const requestedIds = request.ids ?? (request.id === undefined ? undefined : [request.id])
   const rules = (settings.rules ?? []).filter((rule) => requestedIds === undefined || requestedIds.includes(rule.id))
   if (request.ids?.some((id) => !rules.some((rule) => rule.id === id)))
@@ -58,6 +68,7 @@ const noSelectionReason = (
 ): string => {
   if (ambiguous || readyCount > 1 || reasons.includes("ambiguous-update")) return "ambiguous-line"
   if (ruleCount === 0) return "no-enabled-rules"
+  if (reasons.includes("missing-evidence")) return "missing-evidence"
   return reasons[0] ?? "no-eligible-declaration"
 }
 
@@ -78,9 +89,10 @@ export const checkRuleAtLine = Effect.fn("Rules.checkAtLine")(function* (
   observation: {
     readonly retainFreshness?: (check: Effect.Effect<boolean, unknown>) => void
     readonly observeRequest?: () => void
-  } = {}
+  } = {},
+  candidate?: EffectiveRuleCandidate
 ) {
-  const { repository, path, settings, rules } = yield* resolveRuleCheckContext(request, cwd)
+  const { repository, path, settings, rules } = yield* resolveRuleCheckContext(request, cwd, candidate)
   const selection = { root: repository.root, rootIdentity: repository.rootIdentity, path, line: request.line }
   const omissions: Array<{ path: string; declaration: string; reason: string }> = []
   const context = {
@@ -165,16 +177,18 @@ export const checkRuleAtLine = Effect.fn("Rules.checkAtLine")(function* (
   let answers: Extract<EvaluationEvidence, { kind: "validated-answers" }>["answers"] = []
   let outcome: Extract<EvaluationEvidence, { kind: "evaluation-outcome" }>["outcome"] | undefined
   const freshnessContext = { settings, rules }
-  const settingsStillCurrent = loadReviewSettings(repository.root, {
-    userConfigPath: settings.source.userConfiguration,
-    projectConfigPath: settings.source.projectConfiguration
-  }).pipe(
-    Effect.map(
-      (current) =>
-        canonicalValue({ ...current, source: undefined }) === canonicalValue({ ...settings, source: undefined })
-    ),
-    Effect.catch(() => Effect.succeed(false))
-  )
+  const settingsStillCurrent =
+    candidate?.stillCurrent ??
+    loadReviewSettings(repository.root, {
+      userConfigPath: settings.source.userConfiguration,
+      projectConfigPath: settings.source.projectConfiguration
+    }).pipe(
+      Effect.map(
+        (current) =>
+          canonicalValue({ ...current, source: undefined }) === canonicalValue({ ...settings, source: undefined })
+      ),
+      Effect.catch(() => Effect.succeed(false))
+    )
   const stillCurrent = Effect.gen(function* () {
     return (
       (yield* settingsStillCurrent) && (yield* preparedSourceLineStillCurrent(selection, prepared, freshnessContext))

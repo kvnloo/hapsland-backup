@@ -7,26 +7,27 @@ import { ReviewSettingsService } from "@hapsland/review-definition/runtime/revie
 import * as HttpClient from "effect/http/HttpClient"
 import * as Toolkit from "effect/ai/Toolkit"
 import {
-  InspectRequest,
+  DeriveRuleRequest,
   MAX_CHECK_TARGETS,
-  StoredCheckRequest,
+  CheckRulesRequest,
   checkRules,
   inspectRules,
+  previewRules,
   resolveRepository
 } from "./operations.ts"
 
 const DeriveRule = Tool.make("derive_rule", {
   description:
-    "Inspect Hapsland rule inventory or a named rule, including complete authored content, origin, enabled state and effective selection. Supply the explicit absolute Git repository on every call. Inspection writes nothing and sends no classifier requests.",
-  parameters: InspectRequest,
+    "Inspect Hapsland rule inventory or a named rule, or preview complete Project rule changes. Supply the explicit absolute Git repository on every call. Inspect includes authored content, origin, activation and selection. Preview requires complete version-one JSONC content, an authorized .hapsland/rules/custom/<encoded-id>.jsonc destination, and exact rule settings. Preview shows complete content, connection, activation and selection plus a freshness digest; it writes nothing and sends no classifier requests. The digest is not human approval.",
+  parameters: DeriveRuleRequest,
   success: Schema.JsonObject,
   failure: Schema.Struct({ repository: Schema.String, status: Schema.Literal("unavailable"), reason: Schema.String })
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
 const CheckRules = Tool.make("check_rules", {
-  description: `Check 1–${MAX_CHECK_TARGETS} repository-relative path/positive one-based line targets against enabled stored Hapsland rules. Supply mode stored, explicit absolute repository and optional enabled rule IDs. Uses independently configured source/privacy/backend/credential/resource policy and can incur configured backend charges. Evaluated finding/clear observations, skips and unavailable/stale failures remain distinct; zero requests or empty selection is never clear. Source-bearing evidence is private to this result; do not automatically archive it.`,
-  parameters: StoredCheckRequest,
+  description: `Check 1–${MAX_CHECK_TARGETS} repository-relative path/positive one-based line targets. Stored mode selects optional enabled rule IDs. Candidate mode requires the identical complete previewed changes and previewDigest, checks their intended effective configuration without saving or activating them, and rejects stale previews. Each call supplies an explicit absolute repository. Uses independently configured source/privacy/backend/credential/resource policy and can incur configured backend charges; candidate settings cannot widen those policies. State expected judgments before dispatch; mismatch, skips and unavailable/stale results are incomplete and cannot authorize activation. Evaluated finding/clear observations retain actual probabilities, thresholds and request counts. Source-bearing evidence is private to this result; do not automatically archive it.`,
+  parameters: CheckRulesRequest,
   success: Schema.JsonObject,
   failure: Schema.Struct({ repository: Schema.String, status: Schema.Literal("unavailable"), reason: Schema.String })
 })
@@ -60,6 +61,11 @@ const inRepository = <A extends { readonly repository: string }, B, E, R>(
     )
   )
 export const ruleAuthoringHandlers = RuleAuthoringTools.toLayer({
-  derive_rule: (request) => inRepository(request, inspectRules).pipe(Effect.map(jsonResult)),
+  derive_rule: (request) =>
+    inRepository(request, (resolved) =>
+      resolved.operation === "inspect"
+        ? inspectRules(resolved).pipe(Effect.map(jsonResult))
+        : previewRules(resolved).pipe(Effect.map(jsonResult))
+    ),
   check_rules: (request) => inRepository(request, checkRules).pipe(Effect.map(jsonResult))
 })
