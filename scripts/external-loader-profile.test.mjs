@@ -63,7 +63,9 @@ for (const text of [
   'globalThis[name]("x")',
   'Reflect.get(globalThis, name)("x")',
   'module.require("x")',
-  'function require(x) {} require("x")'
+  'function require(x) {} require("x")',
+  'new Worker("loader.js")',
+  'import * as Worker from "../workers/Worker.js"; Worker.WorkerPlatform'
 ]) {
   test(`rejects unsupported loader shape ${text}`, () =>
     assert.throws(() => externalLoaderProfile(text, "asset.js", options), /Unsupported external loader/))
@@ -204,3 +206,14 @@ test("Effect MCP Tool prototype-pollution validation is source pinned without ad
   }
   assert.throws(() => externalLoaderProfile(text, "asset.js", options), /reflective member constructor/)
 })
+for (const module of ["rpc/RpcClient.js", "PrimaryKey.js", "internal/matcher.js"]) {
+  test(`actual MCP closure admits only source-pinned Effect callback dispatch in ${module}`, async () => {
+    const { readFileSync } = await import("node:fs")
+    const file = `node_modules/effect/dist/${module}`
+    const text = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
+    externalLoaderProfile(text, file, options)
+    for (const suffix of ['; (()=>{})["con"+"structor"]("return require")()', "\n// changed dependency bytes"])
+      assert.throws(() => externalLoaderProfile(text + suffix, file, options), /Unsupported external loader/)
+    assert.throws(() => externalLoaderProfile(text, "asset.js", options), /Unsupported external loader/)
+  })
+}

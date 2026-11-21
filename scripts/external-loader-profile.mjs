@@ -42,6 +42,7 @@ export const pinnedExternalLoaderProfiles = Object.freeze({
 // Reviewed data-reflection sites in the exact Effect 4.0.0 byte profile.
 // A modified file receives no exemption, including an appended loader.
 const dataReflectionProfiles = {
+  "internal/matcher.js": "cf995e1d006fbd9d2a451b780dbd5893bacbb0ab7e73cff0a3bd58d4fc36e87a",
   "ai/Tool.js": "64819503fb8ea7e0d0e8f5b1922a04091b080f1ad90e8a2d47735f51134e9e84",
   "Equivalence.js": "fdb6c2fbedb6eea2fc23de55291741082256e77f55a3a5e57fa0101adec8860e",
   "Formatter.js": "97bccfa38937c47642bb91078e8a734391691ca384711f400cc5d076e51cdb89",
@@ -55,6 +56,22 @@ const dataReflectionProfiles = {
 }
 // Exact pinned Effect indexed-dispatch expressions: callbacks, tagged cases and symbol protocols.
 const indexedDispatchProfiles = {
+  // MCP reverse-client middleware, stable primary-key protocol, and matcher predicates/cases.
+  "rpc/RpcClient.js": {
+    sha256: "35dd12d4d5f3e7953f5dbe5f157c0601c906cac230ddfcf44d6849265b119953",
+    members: ["b1fb004562d4cc29015c5f062abe5459e92caf0ca162ac25b3f49c5799e742bd"]
+  },
+  "PrimaryKey.js": {
+    sha256: "e254de7175842e401ddf4442104ae1ac8ad39a5cd71190e9a30a307a432aa68d",
+    members: ["d880a5e6610d7cd65a1a5ce7f28d9160026481ce9ef2fc8a4f7d9c293eab3b2f"]
+  },
+  "internal/matcher.js": {
+    sha256: "cf995e1d006fbd9d2a451b780dbd5893bacbb0ab7e73cff0a3bd58d4fc36e87a",
+    members: [
+      "b8a4a2336f3ff54e0ae261d73078839b1907bb46012fd99fa2a818f3dfbbf4af",
+      "beba7db2cf9d69ca41abaaa9b06d5677bbe1a6202fa1ae7e462b4e77a63d84f8"
+    ]
+  },
   "Channel.js": {
     sha256: "32c0e011c9020849361faab0cbd036e3a06ce6e25dd9b7209f06dcc6b5a5fb36",
     members: [
@@ -379,6 +396,19 @@ function scanExternalLoader(text, file, approval, sha256) {
           path.parentPath.isMemberExpression() &&
           !path.parent.computed &&
           ["flow", "pipe", "identity"].includes(path.parent.property.name)
+        )
+          return
+        // RpcClient reads an Effect service tag, not the global Worker constructor.
+        if (
+          node.name === "Worker" &&
+          file.endsWith("/effect/dist/rpc/RpcClient.js") &&
+          indexedDispatch &&
+          binding?.constant &&
+          binding.path.isImportNamespaceSpecifier() &&
+          binding.path.parent.source.value === "../workers/Worker.js" &&
+          path.parentPath.isMemberExpression() &&
+          !path.parent.computed &&
+          path.parent.property.name === "WorkerPlatform"
         )
           return
         if (node.name === "require" && path.parentPath.isCallExpression() && path.parent.callee === node) return
