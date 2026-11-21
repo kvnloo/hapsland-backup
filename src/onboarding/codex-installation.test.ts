@@ -1894,3 +1894,186 @@ it("compares shared hook payload and Bun version while preserving hooks across C
   rmSync(`${missing.executable}.js`)
   expect(sameStandaloneImplementation(first, missing, "linux")).toBe(false)
 })
+
+it("installs MCP and the canonical companion skill without hooks, preserves settings, and removes only owned artifacts", async () => {
+  const { root, home, bin } = fixture()
+  writeFileSync(
+    join(home, "config.toml"),
+    '# keep this comment\nmodel = "operator-model"\n[mcp_servers.independent]\ncommand = "keep-me"\n'
+  )
+  const request = {
+    operation: "install-preview",
+    codexHome: home,
+    codexExecutable: bin,
+    integrations: { hooks: false, mcp: true }
+  }
+  const preview = await invoke(request)
+  expect(preview.status).toBe("preview")
+  const proposal = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(preview.proposal)
+  expect(JSON.stringify(preview)).toContain("MCP")
+  const installed = await invoke({ ...request, operation: "install", proposalDigest: proposal.digest })
+  expect(installed.status).toBe("installed")
+  expect(existsSync(join(home, "hooks.json"))).toBe(false)
+  const config = readFileSync(join(home, "config.toml"), "utf8")
+  expect(config).toContain('# keep this comment\nmodel = "operator-model"')
+  expect(config).toContain('[mcp_servers.independent]\ncommand = "keep-me"')
+  expect(config).toContain("mcp_servers.hapsland")
+  expect(config).not.toContain("[features]")
+  expect(readFileSync(join(home, "skills/hapsland-rule-authoring/SKILL.md"), "utf8")).toBe(
+    readFileSync(join(process.cwd(), "skills/hapsland-rule-authoring/SKILL.md"), "utf8")
+  )
+  const inspect = await runInstallation(inspectCodexInstallation({ codexHome: home, codexExecutable: bin }))
+  expect(inspect).toMatchObject({ installed: true })
+  const removal = await invoke({ operation: "uninstall", codexHome: home, codexExecutable: bin })
+  const removalProposal = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(removal.proposal)
+  const removed = await invoke({
+    operation: "uninstall",
+    codexHome: home,
+    codexExecutable: bin,
+    proposalDigest: removalProposal.digest
+  })
+  expect(removed.status).toBe("uninstalled")
+  expect(readFileSync(join(home, "config.toml"), "utf8")).toBe(
+    '# keep this comment\nmodel = "operator-model"\n[mcp_servers.independent]\ncommand = "keep-me"\n'
+  )
+  expect(existsSync(join(home, "skills/hapsland-rule-authoring/SKILL.md"))).toBe(false)
+  expect(existsSync(join(root, ".mcp.json"))).toBe(false)
+})
+
+it("repairs missing MCP resources without enabling hooks, and preserves modified owned skill and server conflicts", async () => {
+  const { home, bin } = fixture()
+  const selected = { codexHome: home, codexExecutable: bin, integrations: { hooks: false, mcp: true } }
+  const preview = await invoke({ ...selected, operation: "install-preview" })
+  const digest = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(preview.proposal).digest
+  expect((await invoke({ ...selected, operation: "install", proposalDigest: digest })).status).toBe("installed")
+  const skill = join(home, "skills/hapsland-rule-authoring/SKILL.md")
+  rmSync(skill)
+  const update = await invoke({ codexHome: home, codexExecutable: bin, operation: "update-preview" })
+  expect(update.status).toBe("preview")
+  const updateDigest = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(update.proposal).digest
+  expect(
+    (await invoke({ codexHome: home, codexExecutable: bin, operation: "update", proposalDigest: updateDigest })).status
+  ).toBe("updated")
+  expect(existsSync(join(home, "hooks.json"))).toBe(false)
+  expect(existsSync(skill)).toBe(true)
+  writeFileSync(skill, "operator modified skill\n")
+  expect((await invoke({ codexHome: home, codexExecutable: bin, operation: "update-preview" })).status).toBe("conflict")
+  expect((await invoke({ codexHome: home, codexExecutable: bin, operation: "uninstall" })).status).toBe("conflict")
+  expect(readFileSync(skill, "utf8")).toBe("operator modified skill\n")
+  writeFileSync(skill, readFileSync(join(process.cwd(), "skills/hapsland-rule-authoring/SKILL.md"), "utf8"))
+  const configuration = join(home, "config.toml")
+  const modified = readFileSync(configuration, "utf8").replace('mcp"', 'operator-changed"')
+  writeFileSync(configuration, modified)
+  expect((await invoke({ codexHome: home, codexExecutable: bin, operation: "update-preview" })).status).toBe("conflict")
+  expect((await invoke({ codexHome: home, codexExecutable: bin, operation: "uninstall" })).status).toBe("conflict")
+  expect(readFileSync(configuration, "utf8")).toBe(modified)
+})
+
+it("resumes an interrupted MCP-only installation through the existing approved journal", async () => {
+  const { home, bin } = fixture()
+  const selected = { codexHome: home, codexExecutable: bin, integrations: { hooks: false, mcp: true } }
+  const preview = await invoke({ ...selected, operation: "install-preview" })
+  const digest = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(preview.proposal).digest
+  const partial = await invoke(
+    { ...selected, operation: "install", proposalDigest: digest },
+    { ...process.env, REVIEW_INSTALL_FAIL_AFTER_WRITES: "1" }
+  )
+  expect(partial.status).toBe("partial")
+  const resumed = await invoke({ ...selected, operation: "install", proposalDigest: digest })
+  expect(resumed).toMatchObject({ status: "installed", resumed: true })
+  expect(existsSync(join(home, "hooks.json"))).toBe(false)
+  expect(existsSync(join(home, "skills/hapsland-rule-authoring/SKILL.md"))).toBe(true)
+})
+
+it("keeps MCP-only installation independent of lifecycle hook capability and rejects unowned server collisions", async () => {
+  const { home, bin } = fixture()
+  writeFileSync(bin, '#!/bin/sh\nif [ "$1" = features ]; then exit 1; fi\nprintf "codex-cli 0.171.0\\n"\n', {
+    mode: 0o700
+  })
+  const selected = { codexHome: home, codexExecutable: bin, integrations: { hooks: false, mcp: true } }
+  expect((await invoke({ ...selected, operation: "install-preview" })).status).toBe("preview")
+  writeFileSync(join(home, "config.toml"), '[mcp_servers.hapsland]\ncommand = "operator-owned"\n')
+  expect((await invoke({ ...selected, operation: "install-preview" })).status).toBe("conflict")
+  expect(readFileSync(join(home, "config.toml"), "utf8")).toContain('command = "operator-owned"')
+  expect(existsSync(join(home, ".hapsland/installation-v1.json"))).toBe(false)
+})
+
+it("changes a combined selection to MCP-only while preserving independent hooks and their feature", async () => {
+  const { home, bin } = fixture()
+  const independent = { hooks: { Stop: [{ hooks: [{ type: "command", command: "operator-hook" }] }] } }
+  writeFileSync(join(home, "hooks.json"), JSON.stringify(independent))
+  const selected = { codexHome: home, codexExecutable: bin, integrations: { hooks: true, mcp: true } }
+  const preview = await invoke({ ...selected, operation: "install-preview" })
+  const digest = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(preview.proposal).digest
+  expect((await invoke({ ...selected, operation: "install", proposalDigest: digest })).status).toBe("installed")
+  const onlyMcp = { ...selected, integrations: { hooks: false, mcp: true } }
+  const changed = await invoke({ ...onlyMcp, operation: "install-preview" })
+  expect(changed.status).toBe("preview")
+  const changedDigest = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(changed.proposal).digest
+  expect((await invoke({ ...onlyMcp, operation: "install", proposalDigest: changedDigest })).status).toBe("installed")
+  expect(JSON.parse(readFileSync(join(home, "hooks.json"), "utf8"))).toEqual(independent)
+  expect(readFileSync(join(home, "config.toml"), "utf8")).toContain("hooks = true")
+  expect((await invoke({ codexHome: home, codexExecutable: bin, operation: "update-preview" })).alreadyCurrent).toBe(
+    true
+  )
+})
+
+it("preserves a locally modified owned hooks feature when selecting MCP-only", async () => {
+  const { home, bin } = fixture()
+  expect((await previewAndInstall(home, bin)).installed.status).toBe("installed")
+  const path = join(home, "config.toml")
+  const modified = readFileSync(path, "utf8").replace("hooks = true", "hooks = false")
+  writeFileSync(path, modified)
+  const preview = await invoke({
+    operation: "install-preview",
+    codexHome: home,
+    codexExecutable: bin,
+    integrations: { hooks: false, mcp: true }
+  })
+  expect(preview.status).toBe("conflict")
+  expect(readFileSync(path, "utf8")).toBe(modified)
+  expect(readFileSync(join(home, "hooks.json"), "utf8")).toContain("review-tool-owned")
+})
+
+it("preserves a retained hook launcher changed after an interrupted MCP update", async () => {
+  const { root, home, bin } = fixture()
+  const previous = standalonePackage(root, "combined-previous", "same-hook", "same-capture")
+  const next = standalonePackage(root, "combined-next", "same-hook", "same-capture")
+  for (const entrypoint of [previous, next]) {
+    const packageRoot = packageRootFromEntrypoint(entrypoint)
+    writeFileSync(join(dirname(entrypoint), "hapsland"), "#!/bin/sh\nexit 0\n", { mode: 0o700 })
+    const skill = join(packageRoot, "skills/hapsland-rule-authoring/SKILL.md")
+    mkdirSync(dirname(skill), { recursive: true })
+    writeFileSync(skill, readFileSync(join(process.cwd(), "skills/hapsland-rule-authoring/SKILL.md"), "utf8"))
+  }
+  const environment = (entrypoint: string) => ({
+    ...process.env,
+    REVIEW_INSTALL_RUNTIME: entrypoint,
+    REVIEW_INSTALL_ENTRYPOINT: entrypoint
+  })
+  const request = { codexHome: home, codexExecutable: bin, integrations: { hooks: true, mcp: true } }
+  const preview = await invoke({ ...request, operation: "install-preview" }, environment(previous))
+  expect(
+    (
+      await invoke(
+        { ...request, operation: "install", proposalDigest: readProposalDigest(preview) },
+        environment(previous)
+      )
+    ).status
+  ).toBe("installed")
+  const update = await invoke({ ...request, operation: "update-preview" }, environment(next))
+  const digest = readProposalDigest(update)
+  expect(
+    (
+      await invoke(
+        { ...request, operation: "update", proposalDigest: digest },
+        { ...environment(next), REVIEW_INSTALL_FAIL_AFTER_WRITES: "1" }
+      )
+    ).status
+  ).toBe("partial")
+  const launcher = join(home, ".hapsland/codex-hook-launcher.sh")
+  writeFileSync(launcher, "operator modified retained launcher\n")
+  const resumed = await invoke({ ...request, operation: "update", proposalDigest: digest }, environment(next))
+  expect(resumed).toMatchObject({ status: "partial", error: { message: expect.stringContaining("launcher") } })
+  expect(readFileSync(launcher, "utf8")).toBe("operator modified retained launcher\n")
+})

@@ -1,3 +1,4 @@
+import { IntegrationSelection } from "./integration-selection.ts"
 import * as Schema from "effect/Schema"
 
 export const SETUP_REVIEW_CHOICES = ["enabled", "disabled"] as const
@@ -18,6 +19,7 @@ const setupOperationsFor = <const Fields extends Schema.Struct.Fields>(fields: F
 export const SetupOperation = Schema.Union([
   setupOperationsFor({
     host: Schema.Literal("codex"),
+    integrations: Schema.optionalKey(IntegrationSelection),
     codexHome: Schema.optionalKey(Schema.NonEmptyString),
     codexExecutable: Schema.optionalKey(Schema.NonEmptyString)
   }),
@@ -28,6 +30,7 @@ export const SetupOperation = Schema.Union([
   }),
   setupOperationsFor({
     host: Schema.Literal("claude"),
+    integrations: Schema.optionalKey(IntegrationSelection),
     claudeHome: Schema.optionalKey(Schema.NonEmptyString),
     claudeExecutable: Schema.optionalKey(Schema.NonEmptyString)
   })

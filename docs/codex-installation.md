@@ -17,7 +17,7 @@ After acquiring a verified package through the [installation lanes](installation
 hapsland setup codex
 ```
 
-Setup previews owned hooks, asks before installation, offers masked entry for a
+Setup previews selected owned integration changes, asks before installation, offers masked entry for a
 missing Jev key, and reports offline readiness. Guided setup then offers a separately confirmed Jev key check using a built-in greeting, without project code; declining sends no request. Finish
 current client work, restart the client, and complete its native trust prompts.
 The default registration is user-wide: [file settings](configuration.md) control
@@ -37,7 +37,7 @@ hapsland update codex
 ```
 
 Use `--channel=next` to select a published candidate. Updates stage or reuse a
-verified package, preview hook changes, and ask before applying them. Public
+verified package, preview selected integration changes, and ask before applying them. Public
 lifecycle commands then follow the active package.
 
 If setup or review is not working, diagnose it without changing files:
@@ -50,13 +50,58 @@ Run recovery or removal only for the action you intend:
 
 | Command | Action |
 | --- | --- |
-| `hapsland repair codex` | Restore missing hooks or resume an interrupted operation with a resumable journal. |
+| `hapsland repair codex` | Restore missing owned integration resources or resume an interrupted operation with a resumable journal. |
 | `hapsland reinstall codex` | Replace damaged marked Hapsland handlers while preserving user settings and credentials. |
 | `hapsland uninstall codex` | Preview and remove this integration. |
 
 See [recovery and removal](installation-workflows.md#disablement-removal-and-recovery)
 for ownership conflicts and interrupted operations. Omitting the client name
 checks or acts on every registered Claude/Codex profile; setup opens the selector.
+
+## Optional MCP and companion skill
+
+Choose the integration in the selected user profile:
+
+```sh
+hapsland setup codex --integrations=mcp
+hapsland setup codex --integrations=both
+hapsland setup codex --integrations=hooks
+```
+
+`mcp` installs the bundled stdio server and the single canonical
+`hapsland-rule-authoring` skill independently of hooks. `both` installs both
+integrations. Existing callers that omit the choice keep their recorded
+selection; a new profile defaults to hooks. Changing an existing selection is
+included in the approval preview, including removal of previously owned hooks
+or MCP resources. Pi does not support this MCP selection.
+
+Registration uses `[mcp_servers.hapsland]` in the selected Codex home's
+`config.toml`, launching the retained package's `hapsland mcp` command. The
+companion skill is copied to `skills/hapsland-rule-authoring/SKILL.md` in that
+same home. `--codex-home` selects the destination; start Codex with that profile
+separately. Installation creates no project-local MCP configuration.
+
+Every `derive_rule` and `check_rules` call supplies an absolute `repository` and
+returns the resolved Git working-tree root. Inspection and preview make no
+classifier requests. Checks use the configured backend, file policy and
+credentials and may incur charges. The skill obtains approval of the exact
+validated proposal before saving a rule; tool permission is not that approval.
+
+Update and repair preserve the recorded integration selection. They can restore
+missing owned registrations or skill files. Unrelated MCP servers and settings
+are preserved. A modified owned server entry, modified skill or unowned name
+collision produces a conflict; ordinary update or removal does not overwrite
+it. Removal deletes only the owned registration and unchanged skill, leaving
+rule files and credentials intact.
+
+After installation or changed server/skill resources, finish current work and
+restart the selected Codex profile to reconnect MCP and refresh skills. This is
+separate from native hook trust when hooks are selected. Disposable-profile
+probes on Codex CLI 0.171.0 established user-profile registration and skill
+lookup; deterministic lifecycle fixtures establish preservation mechanics.
+These observations do not establish human approval, classifier quality or
+support for other versions/platforms. Integrated installed-host qualification
+is recorded separately.
 
 ## Lifecycle automation
 

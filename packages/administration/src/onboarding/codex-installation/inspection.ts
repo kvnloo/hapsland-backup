@@ -1,3 +1,5 @@
+import { inspectMcp } from "./mcp.ts"
+import { resolveIntegrationSelection } from "../integration-selection.ts"
 import { type InstallationRequest, RESULT_VERSION } from "./request.ts"
 import { pathsFor } from "./paths.ts"
 import { resolve, join } from "node:path"
@@ -19,7 +21,7 @@ import { conflictResult } from "./results.ts"
 /** Read-only ownership/configuration inspection independent of host compatibility. */
 /** Discover owned registration state without requiring this package or host version to be current. */
 export const hasCodexRegistration = (request: InstallationRequest): boolean => {
-  const paths = pathsFor(resolve(request.codexHome ?? join(homedir(), ".codex")))
+  const paths = pathsFor(resolve(request.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex")))
   if (snapshot(paths.ownership).exists || snapshot(paths.journal).exists) return true
   const hooks = snapshot(paths.hooks).content
   return hooks.includes(OWNED_MARKER) || hooks.includes(COMPOSED_MARKER)
@@ -32,6 +34,8 @@ const requireEnabledHooksFeature = (config: JsonObject) => {
 
 const validateInspectedOwnership = (ownership: OwnershipRecord, inputs: ReturnType<typeof buildInputs>) => {
   if (ownership.codexHome !== inputs.home) throw new Error("ownership record targets another Codex home")
+  if (ownership.mcp !== undefined) inspectMcp(inputs, ownership)
+  if (!resolveIntegrationSelection(undefined, ownership.integrations).hooks) return
   const config = validateToml(snapshot(inputs.paths.config))
   requireEnabledHooksFeature(config)
   const hooks = parseJsonObject(snapshot(inputs.paths.hooks))

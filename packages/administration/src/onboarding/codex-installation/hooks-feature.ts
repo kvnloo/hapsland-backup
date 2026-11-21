@@ -67,7 +67,7 @@ const advanceTomlStringState = (line: string, initial: MultilineDelimiter): Mult
   return multiline
 }
 
-const tomlLines = (content: string): ReadonlyArray<TomlLine> => {
+export const tomlLines = (content: string): ReadonlyArray<TomlLine> => {
   const lines: Array<TomlLine> = []
   let offset = 0
   let multiline: MultilineDelimiter
@@ -173,4 +173,20 @@ export const disableOwnedFeature = (content: string): string => {
   const next = `${content.slice(0, hooks.start)}${content.slice(hooks.end)}`
   assertHooksSemanticState(next, "absent")
   return next
+}
+
+/** Removal preserves an operator-edited feature value and requires recorded ownership. */
+export const validateOwnedHooksFeatureRemoval = (
+  feature: { readonly fingerprint: string } | undefined,
+  parsedConfig: JsonObject
+): boolean => {
+  if (feature === undefined) return false
+  const features = parsedConfig.features
+  if (
+    feature.fingerprint !== HOOKS_FEATURE_FINGERPRINT ||
+    (isObject(features) && features.hooks !== undefined && features.hooks !== true)
+  ) {
+    throw new Error("owned Codex feature value was locally modified; it was preserved")
+  }
+  return true
 }

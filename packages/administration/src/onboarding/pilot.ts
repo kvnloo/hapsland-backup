@@ -342,7 +342,7 @@ export const runPilotSetup = Effect.fn("SetupConversation.run")(function* (
     return { kind: "completed", model: { ...model, phase: "Done", exitCode: 6 }, exitCode: 6 } satisfies SetupOutcome
   }
   yield* interaction.present(
-    `${hostName} review integration setup. Selected profile hooks apply across repositories according to file settings. Installation and local checks make no ${JEV_PROVIDER.name} calls; an optional key verification is offered separately.\n`
+    `${hostName} review integration setup. ${options.host === "pi" ? "Selected profile hooks apply across repositories according to file settings." : "Selected user-profile integrations apply across repositories; each MCP call names its repository. Choose --integrations=hooks, mcp, or both."} Installation and local checks make no ${JEV_PROVIDER.name} calls; an optional key verification is offered separately.\n`
   )
   return yield* Effect.gen(function* () {
     while (!["Done", "Cancelled", "Back", "Failed"].includes(model.phase)) {
