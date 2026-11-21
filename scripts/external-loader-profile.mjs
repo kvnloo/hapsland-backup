@@ -42,6 +42,7 @@ export const pinnedExternalLoaderProfiles = Object.freeze({
 // Reviewed data-reflection sites in the exact Effect 4.0.0 byte profile.
 // A modified file receives no exemption, including an appended loader.
 const dataReflectionProfiles = {
+  "ai/Tool.js": "64819503fb8ea7e0d0e8f5b1922a04091b080f1ad90e8a2d47735f51134e9e84",
   "Equivalence.js": "fdb6c2fbedb6eea2fc23de55291741082256e77f55a3a5e57fa0101adec8860e",
   "Formatter.js": "97bccfa38937c47642bb91078e8a734391691ca384711f400cc5d076e51cdb89",
   "Redactable.js": "6b6a14ee694d16a73a531f96ec21330be346a39442f45956256dea980b48297c",
@@ -393,6 +394,17 @@ function scanExternalLoader(text, file, approval, sha256) {
         )
           reject("computed callable member")
         const key = node.computed ? node.property.value : node.property.name
+        // Tool's JSON guard inspects constructor.prototype as data, never calls it.
+        if (
+          key === "constructor" &&
+          reflectionFile === "ai/Tool.js" &&
+          !node.computed &&
+          path.parentPath.isCallExpression() &&
+          path.parent.arguments[0] === node &&
+          shape(path.parent) === shape(expression('Object.hasOwn(node.constructor, "prototype")')) &&
+          !path.scope.getBinding("Object")
+        )
+          return
         if (key === "constructor" && ["Formatter.js", "internal/equal.js"].includes(reflectionFile)) return
         if (
           key === "constructor" &&
