@@ -1,7 +1,7 @@
 import { prepareTestSourceRuntime, type TestSourceRuntime } from "@hapsland/build-tooling/test-support/source-runtime"
 import { DEFAULT_CHILD_TIMEOUT_MS } from "../../scripts/test-harness/policy.mjs"
 import { execFileSync, spawnSync } from "../../scripts/test-harness/process.mjs"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { EventEmitter } from "node:events"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -198,9 +198,37 @@ describe("production resident activity subprocess", () => {
         }
       )
       expect(result.status).toBe(0)
-      return JSON.parse(result.stdout) as { activitySource: string; activity: { kind: string } }
+      return JSON.parse(result.stdout) as {
+        activitySource: string
+        activity: { kind: string }
+        readiness: { configuration: string; fileSelection: string }
+      }
     }
-    expect(readStatus()).toMatchObject({ activitySource: "resident-v1", activity: { kind: "pending" } })
+    const sourceFreeDiagnostics = () => {
+      try {
+        return {
+          owner: readFileSync(join(runtime, "owner.json"), "utf8"),
+          markers: existsSync(activity)
+            ? readdirSync(activity, { recursive: true, encoding: "utf8" })
+                .filter((path) => path.endsWith(".json"))
+                .map((path) => readFileSync(join(activity, path), "utf8"))
+            : []
+        }
+      } catch {
+        return { unavailable: "resident-activity-diagnostic-capture-raced-or-unreadable" }
+      }
+    }
+    const pending = readStatus()
+    expect(
+      pending,
+      JSON.stringify({
+        activity: pending.activity,
+        state: sourceFreeDiagnostics(),
+        configuration: pending.readiness.configuration,
+        fileSelection: pending.readiness.fileSelection,
+        inheritedUserSelector: process.env.REVIEW_USER_CONFIG_PATH !== undefined
+      })
+    ).toMatchObject({ activitySource: "resident-v1", activity: { kind: "pending" } })
     const owner = JSON.parse(readFileSync(join(runtime, "owner.json"), "utf8")) as { pid: number }
     process.kill(owner.pid, "SIGTERM")
     waitFor(() => !existsSync(join(runtime, "owner.json")))
