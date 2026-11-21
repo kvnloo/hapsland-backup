@@ -15,7 +15,12 @@ export type LoadedRule = DecodedRule & {
   readonly enabled: boolean
   readonly reference: RuleReference
 }
-export type LoadRulesOptions = { readonly root: string; readonly layers: ReadonlyArray<ConfigurationLayer> }
+export type LoadRulesOptions = {
+  readonly root: string
+  readonly layers: ReadonlyArray<ConfigurationLayer>
+  /** Trusted administration plans supply authorized canonical rule destinations, never source/policy overrides. */
+  readonly overlays?: ReadonlyArray<{ readonly path: string; readonly content: string }>
+}
 const validate = Effect.fn("Rules.validate")(<A>(source: string, field: string, read: () => A) =>
   Effect.try({
     try: read,
@@ -101,20 +106,20 @@ const loadAuthoredRule = Effect.fn("Rules.loadAuthored")(function* (
   root: string,
   reference: AuthoredReference,
   loaded: Map<string, LoadedRule>,
-  seen: Set<string>
+  seen: Set<string>,
+  overlays: LoadRulesOptions["overlays"]
 ) {
   const { origin } = reference
   const requested = isAbsolute(reference.path)
     ? resolve(reference.path)
     : resolve(dirname(resolve(origin.source)), reference.path)
-  const path = yield* read(
-    origin.source,
-    origin.field,
-    () => realpath(requested),
-    `rule file '${requested}' does not exist`
-  )
+  const overlay = overlays?.find((entry) => entry.path === requested)
+  const path =
+    overlay === undefined
+      ? yield* read(origin.source, origin.field, () => realpath(requested), `rule file '${requested}' does not exist`)
+      : requested
   yield* checkRuleLocation(root, path, origin)
-  const text = yield* read(path, "$", () => readFile(path, "utf8"), "rule could not be read")
+  const text = overlay?.content ?? (yield* read(path, "$", () => readFile(path, "utf8"), "rule could not be read"))
   const decoded = yield* validate(path, "$", () => decodeRuleText(text, path, origin))
   const previous = loaded.get(decoded.id)
   yield* checkRuleIdentity(decoded, path, origin, previous, seen)
@@ -130,7 +135,7 @@ export const loadRules = Effect.fn("Rules.load")(function* (options: LoadRulesOp
       const origin: RuleOrigin = { layer: layer.name, source: layer.source, field: `rules[${index}]` }
       const reference: RuleReference = { ...(typeof value === "string" ? { path: value } : value), origin }
       if ("id" in reference) yield* inheritRule(reference, loaded, seen)
-      else yield* loadAuthoredRule(root, reference, loaded, seen)
+      else yield* loadAuthoredRule(root, reference, loaded, seen, options.overlays)
     }
   }
   return [...loaded.values()]

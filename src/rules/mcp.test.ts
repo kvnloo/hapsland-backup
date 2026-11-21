@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer"
 import { credentialResolverLayer } from "@hapsland/credential-storage/credentials/owner"
 import { uncachedReviewSettingsLayer } from "@hapsland/review-definition/runtime/review-settings"
 import * as ConfigProvider from "effect/ConfigProvider"
+import * as Schema from "effect/Schema"
 import { rm } from "node:fs/promises"
 import { join } from "node:path"
 import { spawn } from "node:child_process"
@@ -149,6 +150,42 @@ it("serves exactly two MCP tools and explicitly routes A and B through one stdio
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\n")
     const listed = await call("tools/list", {})
     expect(listed).toMatchObject({ result: { tools: [{ name: "derive_rule" }, { name: "check_rules" }] } })
+    expect(listed).toMatchObject({
+      result: {
+        tools: [
+          {
+            name: "derive_rule",
+            inputSchema: {
+              type: "object",
+              anyOf: expect.arrayContaining([
+                expect.objectContaining({
+                  properties: expect.objectContaining({ changes: expect.objectContaining({ type: "array" }) })
+                })
+              ])
+            }
+          },
+          {
+            name: "check_rules",
+            inputSchema: {
+              type: "object",
+              anyOf: expect.arrayContaining([
+                expect.objectContaining({
+                  properties: expect.objectContaining({
+                    previewDigest: expect.objectContaining({ type: "string" }),
+                    changes: expect.objectContaining({ type: "array" })
+                  })
+                })
+              ])
+            }
+          }
+        ]
+      }
+    })
+    expect(JSON.stringify(listed)).toContain('"content"')
+    expect(JSON.stringify(listed)).toContain('"settings"')
+    expect(JSON.stringify(listed)).toContain('"threshold"')
+    expect(JSON.stringify(listed)).toContain("Complete version-one JSONC")
+    expect(JSON.stringify(listed)).toContain("criteria")
     for (const [root, id] of [
       [a, "a"],
       [b, "b"]
@@ -168,6 +205,46 @@ it("serves exactly two MCP tools and explicitly routes A and B through one stdio
     })
     expect(JSON.stringify(check)).toContain("credential-missing")
     expect(JSON.stringify(check)).toContain(b)
+    const changes = [
+      {
+        action: "create",
+        scope: "project",
+        path: ".hapsland/rules/custom/new-rule.jsonc",
+        content: JSON.stringify({
+          version: 1,
+          id: "new-rule",
+          question: "Invalid state?",
+          criteria: { false: "Valid", true: "Invalid" },
+          message: "Refine the type",
+          inputs: [{ kind: "type", languages: ["typescript"], requires: ["root-declaration"] }]
+        }),
+        settings: { enabled: true, threshold: 0.8 }
+      }
+    ]
+    const preview = await call("tools/call", {
+      name: "derive_rule",
+      arguments: { repository: b, operation: "preview", changes }
+    })
+    const decodedPreview = Schema.decodeUnknownSync(
+      Schema.Struct({
+        result: Schema.Struct({
+          structuredContent: Schema.Struct({ repository: Schema.String, previewDigest: Schema.String })
+        })
+      })
+    )(preview)
+    expect(decodedPreview.result.structuredContent.repository).toBe(b)
+    const candidate = await call("tools/call", {
+      name: "check_rules",
+      arguments: {
+        repository: b,
+        mode: "candidate",
+        targets: [{ path: "target.ts", line: 1 }],
+        changes,
+        previewDigest: decodedPreview.result.structuredContent.previewDigest
+      }
+    })
+    expect(JSON.stringify(candidate)).toContain("credential-missing")
+    expect(JSON.stringify(candidate)).toContain(b)
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       const exited = once(child, "exit")

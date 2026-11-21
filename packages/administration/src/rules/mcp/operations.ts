@@ -7,7 +7,9 @@ import { readFileSync } from "node:fs"
 import { discoverPhysicalWorkingTreeRoot } from "@hapsland/native-observation/repository/root"
 import { localFailureMessage } from "../../invocation/failure-message.ts"
 import { loadRuleInventory } from "../inventory.ts"
-import { checkRuleAtLine } from "../check.ts"
+import { checkRuleAtLine, type EffectiveRuleCandidate } from "../check.ts"
+import { RuleChanges } from "../authoring/contract.ts"
+import { previewRuleChanges } from "../authoring/plan.ts"
 
 export const MAX_CHECK_TARGETS = 20
 export const Repository = Schema.NonEmptyString.check(Schema.isPattern(/^\//))
@@ -34,6 +36,52 @@ export const StoredCheckRequest = Schema.Struct({
 })
 export type InspectRequest = typeof InspectRequest.Type
 export type StoredCheckRequest = typeof StoredCheckRequest.Type
+export const PreviewRequest = Schema.Struct({
+  repository: Repository,
+  operation: Schema.Literal("preview"),
+  changes: RuleChanges
+})
+export type PreviewRequest = typeof PreviewRequest.Type
+export const CandidateCheckRequest = Schema.Struct({
+  repository: Repository,
+  mode: Schema.Literal("candidate"),
+  targets: Schema.Array(CheckTarget).check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHECK_TARGETS)),
+  changes: RuleChanges,
+  previewDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))
+})
+/** MCP requires type:object at the root; retain the complete discriminated union beneath it. */
+const objectRoot = Schema.makeFilter<object>((value) => typeof value === "object" && value !== null, {
+  toJsonSchema: () => ({ type: "object" })
+})
+export const DeriveRuleRequest = Schema.Union([InspectRequest, PreviewRequest]).check(objectRoot)
+export const CheckRulesRequest = Schema.Union([StoredCheckRequest, CandidateCheckRequest]).check(objectRoot)
+export type CheckRulesRequest = typeof CheckRulesRequest.Type
+
+export const previewRules = Effect.fn("Rules.mcp.preview")(function* (request: PreviewRequest) {
+  const userConfigPath = Option.getOrUndefined(yield* Config.option(Config.NonEmptyString("REVIEW_USER_CONFIG_PATH")))
+  const plan = yield* previewRuleChanges(
+    request.repository,
+    request.changes,
+    userConfigPath === undefined ? {} : { userConfigPath }
+  )
+  return {
+    version: plan.version,
+    repository: plan.repository,
+    changes: plan.changes,
+    files: plan.files,
+    configurations: plan.configurations,
+    previewDigest: plan.previewDigest,
+    classifierCalls: 0,
+    rules: plan.rules.map((rule) => ({
+      id: rule.id,
+      enabled: rule.enabled,
+      threshold: rule.threshold,
+      applicability: rule.applicability,
+      languages: rule.languages,
+      inputs: rule.inputs
+    }))
+  }
+})
 
 export const resolveRepository = Effect.fn("Rules.mcp.resolveRepository")(function* (repository: string) {
   if (!isAbsolute(repository)) return yield* Effect.fail(new Error("repository must be an explicit absolute path"))
@@ -60,21 +108,43 @@ export const inspectRules = Effect.fn("Rules.mcp.inspect")(function* (request: I
 })
 
 /** Bounded serial checks preserve the existing request limits and independent policy owner. */
-export const checkRules = Effect.fn("Rules.mcp.check")(function* (request: StoredCheckRequest) {
-  yield* Schema.decodeUnknownEffect(StoredCheckRequest)(request)
+export const checkRules = Effect.fn("Rules.mcp.check")(function* (suppliedRequest: CheckRulesRequest) {
+  const request = yield* Schema.decodeUnknownEffect(CheckRulesRequest, { onExcessProperty: "error" })(suppliedRequest)
   const repository = yield* resolveRepository(request.repository)
+  let candidate: EffectiveRuleCandidate | undefined
+  if (request.mode === "candidate") {
+    const userConfigPath = Option.getOrUndefined(yield* Config.option(Config.NonEmptyString("REVIEW_USER_CONFIG_PATH")))
+    const options = userConfigPath === undefined ? {} : { userConfigPath }
+    const plan = yield* previewRuleChanges(repository.root, request.changes, options)
+    if (plan.previewDigest !== request.previewDigest)
+      return yield* Effect.fail(
+        new Error("Candidate preview is stale or changed; inspect and preview again before checking.")
+      )
+    candidate = {
+      settings: plan.settings,
+      stillCurrent: previewRuleChanges(repository.root, request.changes, options).pipe(
+        Effect.map((current) => current.previewDigest === request.previewDigest),
+        Effect.catch(() => Effect.succeed(false))
+      )
+    }
+  }
   const captured = yield* Effect.forEach(request.targets, (target) =>
     Effect.gen(function* () {
       let current: Effect.Effect<boolean, unknown> | undefined
       let classifierCalls = 0
-      const outcome = yield* checkRuleAtLine({ ...target, ids: request.ids }, repository.root, {
-        retainFreshness: (check) => {
-          current = check
+      const outcome = yield* checkRuleAtLine(
+        { ...target, ids: request.mode === "stored" ? request.ids : undefined },
+        repository.root,
+        {
+          retainFreshness: (check) => {
+            current = check
+          },
+          observeRequest: () => {
+            classifierCalls++
+          }
         },
-        observeRequest: () => {
-          classifierCalls++
-        }
-      }).pipe(
+        candidate
+      ).pipe(
         Effect.catch((error) =>
           Effect.succeed({
             version: 1 as const,
