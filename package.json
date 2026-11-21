@@ -40,7 +40,8 @@
     "dist/bin",
     "dist/runtime/**/*.js",
     "dist/pi/**/*.js",
-    "dist/rules/defaults/*.json"
+    "dist/rules/defaults/*.json",
+    "skills/hapsland-rule-authoring/SKILL.md"
   ],
   "bin": {
     "hapsland": "bin/launch.sh",
