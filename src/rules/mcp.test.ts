@@ -225,13 +225,14 @@ it("serves exactly two MCP tools and explicitly routes A and B through one stdio
       name: "derive_rule",
       arguments: { repository: b, operation: "preview", changes }
     })
-    const decodedPreview = Schema.decodeUnknownSync(
+    const decodePreview = Schema.decodeUnknownSync(
       Schema.Struct({
         result: Schema.Struct({
           structuredContent: Schema.Struct({ repository: Schema.String, previewDigest: Schema.String })
         })
       })
-    )(preview)
+    )
+    const decodedPreview = decodePreview(preview)
     expect(decodedPreview.result.structuredContent.repository).toBe(b)
     const candidate = await call("tools/call", {
       name: "check_rules",
@@ -245,6 +246,52 @@ it("serves exactly two MCP tools and explicitly routes A and B through one stdio
     })
     expect(JSON.stringify(candidate)).toContain("credential-missing")
     expect(JSON.stringify(candidate)).toContain(b)
+    // This fixture establishes stdio mechanics, not human consent or successful candidate validation.
+    const previewA = decodePreview(
+      await call("tools/call", { name: "derive_rule", arguments: { repository: a, operation: "preview", changes } })
+    )
+    const invalidConsent = await call("tools/call", {
+      name: "derive_rule",
+      arguments: {
+        repository: a,
+        operation: "apply",
+        changes,
+        previewDigest: previewA.result.structuredContent.previewDigest,
+        approved: true
+      }
+    })
+    expect(invalidConsent).toMatchObject({ result: { isError: true } })
+    const applied = await call("tools/call", {
+      name: "derive_rule",
+      arguments: {
+        repository: a,
+        operation: "apply",
+        changes,
+        previewDigest: previewA.result.structuredContent.previewDigest
+      }
+    })
+    expect(applied).toMatchObject({
+      result: {
+        structuredContent: {
+          repository: a,
+          status: "completed",
+          files: [{ id: "new-rule", saved: "exact", activation: "enabled" }],
+          validation: "not-run"
+        }
+      }
+    })
+    const saved = await call("tools/call", {
+      name: "derive_rule",
+      arguments: { repository: a, operation: "inspect", id: "new-rule" }
+    })
+    expect(saved).toMatchObject({
+      result: {
+        structuredContent: {
+          repository: a,
+          rules: [{ id: "new-rule", enabled: true, content: changes[0]?.content, threshold: 0.8 }]
+        }
+      }
+    })
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       const exited = once(child, "exit")

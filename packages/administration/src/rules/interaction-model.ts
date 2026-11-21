@@ -23,7 +23,7 @@ export type RulesEvent = {
   action:
     | { kind: "scope"; scope: RuleScope }
     | { kind: "continue" }
-    | { kind: "approve"; yes: boolean; digest: string }
+    | { kind: "approve"; choice: "save" | "revise" | "skip"; digest: string }
     | { kind: "back" | "exit" }
     | { kind: "previewed"; commandId: number; plan: RulePlan }
     | { kind: "observed"; commandId: number; outcome: Exclude<RuleOutcome, "declined"> }
@@ -56,7 +56,12 @@ const previewed = (model: RulesModel, action: Action): RulesModel => {
 }
 const approved = (model: RulesModel, action: Action): RulesModel => {
   if (action.kind !== "approve" || action.digest !== model.plan?.digest) return model
-  return move(model, action.yes ? "Applying" : "Done", action.yes ? {} : { outcome: "declined" })
+  if (action.choice === "revise") return move(model, "Previewing", { plan: undefined, outcome: undefined })
+  return move(
+    model,
+    action.choice === "save" ? "Applying" : "Done",
+    action.choice === "save" ? {} : { outcome: "declined" }
+  )
 }
 const observed = (model: RulesModel, action: Action): RulesModel => {
   if (action.kind !== "observed") return model
@@ -71,7 +76,12 @@ const transitions: Record<RulesModel["phase"], (model: RulesModel, action: Actio
       ? move(model, "Previewing", { scope: action.scope, plan: undefined, outcome: undefined })
       : model,
   Previewing: previewed,
-  Preview: (model, action) => (action.kind === "continue" ? move(model, "Approval") : model),
+  Preview: (model, action) =>
+    action.kind === "continue"
+      ? move(model, "Approval")
+      : action.kind === "approve" && action.choice !== "save"
+        ? approved(model, action)
+        : model,
   Approval: approved,
   Applying: observed,
   Done: terminal,

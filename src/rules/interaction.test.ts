@@ -143,7 +143,7 @@ it.effect("stale answers, foreign digests and duplicate completions cannot advan
     expect(
       reduceRules(approval.before, {
         revision: approval.before.revision,
-        action: { kind: "approve", yes: true, digest: "foreign" }
+        action: { kind: "approve", choice: "save", digest: "foreign" }
       })
     ).toBe(approval.before)
     const preview = transitions.find((t) => t.event.action.kind === "previewed")!
@@ -207,11 +207,14 @@ it.effect("rules reducer accepts only phase-appropriate fresh events and keeps t
     })
     const approval = reduceRules(preview, { revision: 2, action: { kind: "continue" } })
     expect(approval.phase).toBe("Approval")
-    expect(reduceRules(approval, { revision: 3, action: { kind: "approve", yes: true, digest: "other" } })).toBe(
+    expect(reduceRules(approval, { revision: 3, action: { kind: "approve", choice: "save", digest: "other" } })).toBe(
       approval
     )
     expect(reduceRules(approval, { revision: 3, action: { kind: "back" } }).phase).toBe("Preview")
-    const applying = reduceRules(approval, { revision: 3, action: { kind: "approve", yes: true, digest: "fresh" } })
+    const applying = reduceRules(approval, {
+      revision: 3,
+      action: { kind: "approve", choice: "save", digest: "fresh" }
+    })
     expect(applying.phase).toBe("Applying")
     expect(reduceRules(applying, { revision: 4, action: { kind: "exit" } })).toBe(applying)
     expect(
@@ -223,5 +226,38 @@ it.effect("rules reducer accepts only phase-appropriate fresh events and keeps t
     const cancelled = reduceRules(initial, { revision: 0, action: { kind: "exit" } })
     expect(cancelled.phase).toBe("Cancelled")
     expect(reduceRules(cancelled, { revision: 1, action: { kind: "scope", scope: "personal" } })).toBe(cancelled)
+  })
+)
+
+it.effect("Revise obtains a fresh owner preview before the subsequent Save", () =>
+  Effect.gen(function* () {
+    const script = scriptedInteraction([
+      { kind: "choose", index: 0 },
+      { kind: "choose", index: 1 },
+      { kind: "choose", index: 0 },
+      { kind: "confirm", line: "y" }
+    ])
+    let previews = 0
+    const applied: string[] = []
+    const outcome = yield* runRuleConversation("create", {
+      preview: (scope) =>
+        Effect.sync(() => ({
+          action: "create" as const,
+          scope,
+          digest: `revision-${++previews}`,
+          configuration: "/project/config",
+          rule: "operator-concern",
+          enabled: true
+        })),
+      apply: (plan) =>
+        Effect.sync(() => {
+          applied.push(plan.digest)
+          return { kind: "applied" as const, result: "saved" }
+        })
+    }).pipe(Effect.provideService(InteractionService, script.interaction))
+    expect(previews).toBe(2)
+    expect(applied).toEqual(["revision-2"])
+    expect(outcome.model.outcome).toBe("applied")
+    expect(script.remaining()).toBe(0)
   })
 )

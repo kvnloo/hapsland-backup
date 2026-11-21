@@ -8,7 +8,8 @@ import { discoverPhysicalWorkingTreeRoot } from "@hapsland/native-observation/re
 import { localFailureMessage } from "../../invocation/failure-message.ts"
 import { loadRuleInventory } from "../inventory.ts"
 import { checkRuleAtLine, type EffectiveRuleCandidate } from "../check.ts"
-import { RuleChanges } from "../authoring/contract.ts"
+import { applyRuleChanges } from "../management.ts"
+import { RuleChanges, PreviewDigest } from "../authoring/contract.ts"
 import { previewRuleChanges } from "../authoring/plan.ts"
 
 export const MAX_CHECK_TARGETS = 20
@@ -47,13 +48,31 @@ export const CandidateCheckRequest = Schema.Struct({
   mode: Schema.Literal("candidate"),
   targets: Schema.Array(CheckTarget).check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHECK_TARGETS)),
   changes: RuleChanges,
-  previewDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))
+  previewDigest: PreviewDigest
 })
+export const ApplyRequest = Schema.Struct({
+  repository: Repository,
+  operation: Schema.Literal("apply"),
+  changes: RuleChanges,
+  previewDigest: PreviewDigest
+})
+export type ApplyRequest = typeof ApplyRequest.Type
+
+export const applyRules = Effect.fn("Rules.mcp.apply")(function* (request: ApplyRequest) {
+  const userConfigPath = Option.getOrUndefined(yield* Config.option(Config.NonEmptyString("REVIEW_USER_CONFIG_PATH")))
+  return yield* applyRuleChanges(
+    request.repository,
+    request.changes,
+    request.previewDigest,
+    userConfigPath === undefined ? {} : { userConfigPath }
+  )
+})
+
 /** MCP requires type:object at the root; retain the complete discriminated union beneath it. */
 const objectRoot = Schema.makeFilter<object>((value) => typeof value === "object" && value !== null, {
   toJsonSchema: () => ({ type: "object" })
 })
-export const DeriveRuleRequest = Schema.Union([InspectRequest, PreviewRequest]).check(objectRoot)
+export const DeriveRuleRequest = Schema.Union([InspectRequest, PreviewRequest, ApplyRequest]).check(objectRoot)
 export const CheckRulesRequest = Schema.Union([StoredCheckRequest, CandidateCheckRequest]).check(objectRoot)
 export type CheckRulesRequest = typeof CheckRulesRequest.Type
 

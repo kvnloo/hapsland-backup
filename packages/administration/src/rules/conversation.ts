@@ -42,10 +42,18 @@ const reviewPlan = Effect.fn("Rules.review")(function* (
   yield* interaction.present(rulesPreview(plan) + "\n")
   const answer = yield* interaction.choose({
     message: "Review rule changes",
-    choices: [{ title: "Continue to approval", value: "continue" }],
+    choices: [
+      { title: "Continue to approval", value: "continue" as const },
+      { title: "Revise", value: "revise" as const },
+      { title: "Skip", value: "skip" as const }
+    ],
     back
   })
-  return answer.kind === "selected" ? { kind: "continue" } : { kind: answer.kind }
+  return answer.kind === "selected"
+    ? answer.value === "continue"
+      ? { kind: "continue" }
+      : { kind: "approve", choice: answer.value, digest: plan.digest }
+    : { kind: answer.kind }
 })
 const approvePlan = Effect.fn("Rules.approval")(function* (
   interaction: Pick<Interaction, "present" | "choose" | "confirm">,
@@ -56,7 +64,9 @@ const approvePlan = Effect.fn("Rules.approval")(function* (
     preview: rulesPreview(plan),
     back: true
   })
-  return answer.kind === "confirmed" ? { kind: "approve", yes: answer.yes, digest: plan.digest } : { kind: answer.kind }
+  return answer.kind === "confirmed"
+    ? { kind: "approve", choice: answer.yes ? "save" : "skip", digest: plan.digest }
+    : { kind: answer.kind }
 })
 const readDialog = (
   interaction: Pick<Interaction, "present" | "choose" | "confirm">,

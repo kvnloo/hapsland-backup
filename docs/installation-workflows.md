@@ -557,6 +557,7 @@ Run `hapsland --version` alone to identify the invoked package version. This doe
 
 | Command | Purpose |
 |---|---|
+| `mcp` | Serve the rule-authoring MCP interface |
 | `dashboard` | Serve the local inspection dashboard in the foreground |
 | `setup` | Set up review integrations interactively or with an explicit unattended plan |
 | `update` | Preview and confirm updates to registered integrations |
@@ -565,6 +566,14 @@ Run `hapsland --version` alone to identify the invoked package version. This doe
 | `reinstall` | Replace marked Hapsland hooks, preserving user settings |
 | `uninstall` | Remove owned Hapsland hooks from registered integrations |
 | `rules` | Inspect, manage and test local JSON rules. Check and audit send code to the classifier; other actions make no classifier calls. Defaults to list. Edit rule JSON files in your editor. |
+
+#### hapsland mcp
+
+Serve Hapsland rule authoring through stdio MCP; each request names its repository.
+
+```sh
+hapsland mcp
+```
 
 #### hapsland dashboard
 
