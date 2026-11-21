@@ -294,6 +294,27 @@ describe("one-off file and line rule checks", () => {
     expect(fake.requests).toHaveLength(1)
   })
 
+  it("invalidates observations when authored rule content changes during evaluation", async () => {
+    const root = await fixture()
+    const fake = transport(0.9, async () => {
+      await put(
+        root,
+        "rule.json",
+        JSON.stringify({
+          version: 1,
+          id: "test/concern",
+          question: "A changed concern",
+          criteria: { false: "Valid", true: "Invalid" },
+          message: "New wording",
+          inputs: [{ languages: ["typescript"], kind: "type", requires: ["root-declaration"] }]
+        })
+      )
+    })
+    const result = await run(root, 4, fake.httpClient)
+    expect(result).toMatchObject({ status: "unavailable", reason: "stale", classifierCalls: 1, results: [] })
+    expect(fake.requests).toHaveLength(1)
+  })
+
   it("reports invalid backend answers as unavailable, not clear", async () => {
     const root = await fixture()
     const httpClient = HttpClient.make((request) =>

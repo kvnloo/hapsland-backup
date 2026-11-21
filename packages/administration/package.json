@@ -363,6 +363,14 @@
     "./rules/audit": {
       "types": "./dist/rules/audit.d.ts",
       "default": "./dist/rules/audit.js"
+    },
+    "./rules/mcp/operations": {
+      "types": "./dist/rules/mcp/operations.d.ts",
+      "default": "./dist/rules/mcp/operations.js"
+    },
+    "./rules/mcp/server": {
+      "types": "./dist/rules/mcp/server.d.ts",
+      "default": "./dist/rules/mcp/server.js"
     }
   },
   "dependencies": {

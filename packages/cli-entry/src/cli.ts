@@ -158,6 +158,10 @@ const writeIdentityOutput = (session: InvocationSession): boolean => {
 }
 
 const dispatchInvocation = Effect.fn("Cli.dispatch")(function* (session: InvocationSession, invocation: Invocation) {
+  if (invocation.kind === "mcp") {
+    const { runRuleAuthoringServer } = yield* Effect.promise(() => import("@hapsland/administration/rules/mcp/server"))
+    return yield* runRuleAuthoringServer
+  }
   if (invocation.kind === "dashboard") {
     const { runInspectionDashboard } = yield* Effect.promise(
       () => import("@hapsland/administration/inspection/command")
