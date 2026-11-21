@@ -11,6 +11,7 @@ import { checkRuleAtLine, type EffectiveRuleCandidate } from "../check.ts"
 import { applyRuleChanges } from "../management.ts"
 import { RuleChanges, PreviewDigest } from "../authoring/contract.ts"
 import { previewRuleChanges } from "../authoring/plan.ts"
+import type { CompiledRule } from "@hapsland/review-definition/rules/compiler"
 
 export const MAX_CHECK_TARGETS = 20
 export const Repository = Schema.NonEmptyString.check(Schema.isPattern(/^\//))
@@ -75,6 +76,22 @@ const objectRoot = Schema.makeFilter<object>((value) => typeof value === "object
 export const DeriveRuleRequest = Schema.Union([InspectRequest, PreviewRequest, ApplyRequest]).check(objectRoot)
 export const CheckRulesRequest = Schema.Union([StoredCheckRequest, CandidateCheckRequest]).check(objectRoot)
 export type CheckRulesRequest = typeof CheckRulesRequest.Type
+const ruleView = (rule: CompiledRule | undefined) =>
+  rule === undefined
+    ? undefined
+    : {
+        id: rule.id,
+        enabled: rule.enabled,
+        source: rule.source,
+        definitionDigest: rule.definitionDigest,
+        question: rule.decision.instructions,
+        criteria: rule.decision.criteria,
+        message: rule.message,
+        threshold: rule.threshold,
+        applicability: rule.applicability,
+        languages: rule.languages,
+        inputs: rule.inputs
+      }
 
 export const previewRules = Effect.fn("Rules.mcp.preview")(function* (request: PreviewRequest) {
   const userConfigPath = Option.getOrUndefined(yield* Config.option(Config.NonEmptyString("REVIEW_USER_CONFIG_PATH")))
@@ -91,13 +108,11 @@ export const previewRules = Effect.fn("Rules.mcp.preview")(function* (request: P
     configurations: plan.configurations,
     previewDigest: plan.previewDigest,
     classifierCalls: 0,
-    rules: plan.rules.map((rule) => ({
-      id: rule.id,
-      enabled: rule.enabled,
-      threshold: rule.threshold,
-      applicability: rule.applicability,
-      languages: rule.languages,
-      inputs: rule.inputs
+    rules: plan.rules.map(ruleView),
+    affectedRules: plan.affectedRules.map((effect) => ({
+      id: effect.id,
+      before: ruleView(effect.before),
+      after: ruleView(effect.after)
     }))
   }
 })
