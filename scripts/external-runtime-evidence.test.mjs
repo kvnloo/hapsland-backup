@@ -74,24 +74,28 @@ test("AST-resolved edges enforce forbidden owner capabilities and package names"
   )
 })
 
-test("assembly evidence scans the installed MCP Tool and resolves its current external edges", async () => {
-  const { contributionOwner } = await import("./build-contributions.mjs")
-  const { readPackageGraph } = await import("./package-graph.mjs")
-  const root = realpathSync(new URL("..", import.meta.url))
-  const file = resolve(root, "node_modules/effect/dist/ai/Tool.js")
-  const input = { ...fileEvidence(root, file), ...contributionOwner(root, readPackageGraph(root), file) }
-  const [evidence] = externalRuntimeEvidence(
-    root,
-    [input],
-    [],
-    new Map(),
-    "bun-darwin-arm64",
-    undefined,
-    "packages/cli-entry/dist/cli.js"
-  )
-  assert.equal(evidence.sha256, input.sha256)
-  assert.ok(evidence.edges.some((edge) => edge.specifier === "../Schema.js" && edge.target.external === "effect"))
-  assert.ok(evidence.edges.every((edge) => /^[a-f0-9]{64}$/.test(edge.target.sha256)))
-  assert.equal(evidence.nativeUses, 0)
-  assert.equal(evidence.codegenUses, 0)
-})
+for (const module of ["ai/Tool.js", "rpc/RpcClient.js", "PrimaryKey.js", "internal/matcher.js"]) {
+  test(`assembly evidence scans installed MCP dependency ${module} and resolves its current external edges`, async () => {
+    const { contributionOwner } = await import("./build-contributions.mjs")
+    const { readPackageGraph } = await import("./package-graph.mjs")
+    const root = realpathSync(new URL("..", import.meta.url))
+    const file = resolve(root, `node_modules/effect/dist/${module}`)
+    const input = { ...fileEvidence(root, file), ...contributionOwner(root, readPackageGraph(root), file) }
+    const [evidence] = externalRuntimeEvidence(
+      root,
+      [input],
+      [],
+      new Map(),
+      "bun-darwin-arm64",
+      undefined,
+      "packages/cli-entry/dist/cli.js"
+    )
+    assert.equal(evidence.sha256, input.sha256)
+    assert.ok(evidence.edges.length > 0)
+    assert.ok(
+      evidence.edges.every((edge) => /^[a-f0-9]{64}$/.test(edge.target.sha256) && edge.target.external === "effect")
+    )
+    assert.equal(evidence.nativeUses, 0)
+    assert.equal(evidence.codegenUses, 0)
+  })
+}
