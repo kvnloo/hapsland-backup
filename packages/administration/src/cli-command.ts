@@ -115,6 +115,7 @@ export const unattendedSetupUsage = (): string =>
   `Unattended setup requires an explicit client, ${setupFlag("review")} ${SETUP_REVIEW_CHOICES.join("|")} and ${setupFlag("credential")} ${SETUP_CREDENTIAL_CHOICES.join("|")}. Preview example: ${unattendedSetupTemplates()[0]}. Add ${setupFlag("apply")} to authorize changes, or use ${setupFlag("apply-plan")} FILE.`
 
 export type Invocation =
+  | { readonly kind: "mcp" }
   | { readonly kind: "dashboard"; readonly host: string; readonly port: number }
   | { readonly kind: "rules"; readonly options: RulesOptions }
   | { readonly kind: "automation"; readonly options: AutomationOptions; readonly client: ClientArguments }
@@ -246,6 +247,13 @@ export const makeCliCommand = (invoke: (invocation: Invocation) => void) => {
   })
   return parent.pipe(
     Command.withSubcommands([
+      Command.make("mcp", {}, () => Effect.sync(() => invoke({ kind: "mcp" }))).pipe(
+        Command.withShortDescription("Serve the rule-authoring MCP interface"),
+        Command.withDescription("Serve Hapsland rule authoring through stdio MCP; each request names its repository."),
+        Command.withExamples([
+          { command: `${CLI_NAME} mcp`, description: "Start the foreground stdio server for an agent host" }
+        ])
+      ),
       Command.make(
         "dashboard",
         {

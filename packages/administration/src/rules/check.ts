@@ -15,12 +15,15 @@ import {
   type PreparedSource,
   type EvaluationEvidence
 } from "@hapsland/review-execution/direct-event/pipeline"
+import { loadReviewSettings } from "@hapsland/review-definition/runtime/review-config"
+import { canonicalValue } from "@hapsland/review-definition/direct-event/model"
 import { findingFromProbability } from "@hapsland/review-definition/rules/decision"
 
 export interface RuleCheckRequest {
   readonly path: string
   readonly line: number
   readonly id?: string | undefined
+  readonly ids?: ReadonlyArray<string> | undefined
 }
 
 const resolveRuleCheckContext = Effect.fn("Rules.resolveCheckContext")(function* (
@@ -35,7 +38,12 @@ const resolveRuleCheckContext = Effect.fn("Rules.resolveCheckContext")(function*
   const userConfigPath = Option.getOrUndefined(yield* Config.option(Config.NonEmptyString("REVIEW_USER_CONFIG_PATH")))
   const settingsService = yield* ReviewSettingsService
   const settings = yield* settingsService.capture(settingsSource(repository.root, userConfigPath))
-  const rules = (settings.rules ?? []).filter((rule) => request.id === undefined || rule.id === request.id)
+  const requestedIds = request.ids ?? (request.id === undefined ? undefined : [request.id])
+  const rules = (settings.rules ?? []).filter((rule) => requestedIds === undefined || requestedIds.includes(rule.id))
+  if (request.ids?.some((id) => !rules.some((rule) => rule.id === id)))
+    return yield* Effect.fail(
+      new Error("Every selected rule must be enabled. Run hapsland rules list to inspect rules.")
+    )
   if (request.id !== undefined && rules.length === 0)
     return yield* Effect.fail(
       new Error(`Rule '${request.id}' is not enabled. Run hapsland rules list to inspect rules.`)
@@ -64,7 +72,14 @@ const capturedSelection = (prepared: PreparedSource) => ({
 })
 
 /** Manual review shares capture, graph, evidence admission, credentials and model execution with hooks. */
-export const checkRuleAtLine = Effect.fn("Rules.checkAtLine")(function* (request: RuleCheckRequest, cwd: string) {
+export const checkRuleAtLine = Effect.fn("Rules.checkAtLine")(function* (
+  request: RuleCheckRequest,
+  cwd: string,
+  observation: {
+    readonly retainFreshness?: (check: Effect.Effect<boolean, unknown>) => void
+    readonly observeRequest?: () => void
+  } = {}
+) {
   const { repository, path, settings, rules } = yield* resolveRuleCheckContext(request, cwd)
   const selection = { root: repository.root, rootIdentity: repository.rootIdentity, path, line: request.line }
   const omissions: Array<{ path: string; declaration: string; reason: string }> = []
@@ -80,9 +95,18 @@ export const checkRuleAtLine = Effect.fn("Rules.checkAtLine")(function* (request
   const base = {
     version: 1 as const,
     operation: "rule-check" as const,
+    repository: repository.root,
     path,
     line: request.line,
     provider: settings.reviewServiceIdentity,
+    requestSettings: { backend: settings.backend, apiBase: settings.apiBase, destination: settings.destination },
+    effectiveRules: rules.map((rule) => ({
+      id: rule.id,
+      definitionDigest: rule.definitionDigest,
+      threshold: rule.threshold,
+      languages: rule.languages,
+      selection: rule.applicability
+    })),
     omissions,
     analysis: preparation.observation.outcomes.map((outcome) =>
       outcome.status === "observed"
@@ -141,12 +165,31 @@ export const checkRuleAtLine = Effect.fn("Rules.checkAtLine")(function* (request
   let answers: Extract<EvaluationEvidence, { kind: "validated-answers" }>["answers"] = []
   let outcome: Extract<EvaluationEvidence, { kind: "evaluation-outcome" }>["outcome"] | undefined
   const freshnessContext = { settings, rules }
+  const settingsStillCurrent = loadReviewSettings(repository.root, {
+    userConfigPath: settings.source.userConfiguration,
+    projectConfigPath: settings.source.projectConfiguration
+  }).pipe(
+    Effect.map(
+      (current) =>
+        canonicalValue({ ...current, source: undefined }) === canonicalValue({ ...settings, source: undefined })
+    ),
+    Effect.catch(() => Effect.succeed(false))
+  )
+  const stillCurrent = Effect.gen(function* () {
+    return (
+      (yield* settingsStillCurrent) && (yield* preparedSourceLineStillCurrent(selection, prepared, freshnessContext))
+    )
+  }).pipe(Effect.catch(() => Effect.succeed(false)))
+  observation.retainFreshness?.(stillCurrent)
   const beforeDispatch = Effect.gen(function* () {
-    stale = !(yield* preparedSourceLineStillCurrent(selection, prepared, freshnessContext))
+    stale = !(yield* stillCurrent)
     if (stale) return yield* Effect.fail(new Error("Selected source changed before dispatch"))
   })
   const evaluated = yield* evaluatePrepared(prepared, beforeDispatch, (evidence) => {
-    if (evidence.kind === "model-input") classifierCalls++
+    if (evidence.kind === "model-input") {
+      classifierCalls++
+      observation.observeRequest?.()
+    }
     if (evidence.kind === "validated-answers") answers = evidence.answers
     if (evidence.kind === "evaluation-outcome") outcome = evidence.outcome
   }).pipe(
@@ -161,7 +204,7 @@ export const checkRuleAtLine = Effect.fn("Rules.checkAtLine")(function* (request
       reason: stale ? "stale" : (outcome ?? evaluated.status),
       explanation: "No valid current classifier result. This is not a passing check."
     }
-  if (!(yield* preparedSourceLineStillCurrent(selection, prepared, freshnessContext)))
+  if (!(yield* stillCurrent))
     return {
       ...captured,
       status: "unavailable" as const,
