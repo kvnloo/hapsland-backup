@@ -73,7 +73,7 @@ describe("Python bounded local model evidence", () => {
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeGitFixture)
       yield* Effect.promise(() => put(root, "pkg/base.py", base))
-      yield* Effect.promise(() => put(root, "pkg/Base.py", "class Inner:\n    id: str\n"))
+      yield* Effect.promise(() => put(root, "pkg/Exported.py", "class Inner:\n    id: str\n"))
       for (const initializer of ["", "from . import base\n", "import pkg.base as base\n"]) {
         yield* Effect.promise(() => put(root, "pkg/__init__.py", initializer))
         yield* Effect.promise(() =>
@@ -84,7 +84,7 @@ describe("Python bounded local model evidence", () => {
         expect(preparedProviderInput(result.ready[0]!)?.evidence?.nodes[0]?.domain).toBe("pkg/base.py")
       }
       for (const [initializer, reference] of [
-        ["from .base import Base\n", "Base.Inner"],
+        ["from .base import Base as Exported\n", "Exported.Inner"],
         ["base = 1\n", "base.Base"]
       ]) {
         yield* Effect.promise(() => put(root, "pkg/__init__.py", initializer!))
