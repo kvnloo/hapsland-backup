@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import {
   administrationWorkflowSourceFiles,
   readCodexInstallationSource,
@@ -122,26 +123,38 @@ for (const [runtime, source] of [
   }
 }
 
-const claudeInstallation = read("packages/administration/src/onboarding/claude-installation.ts")
-if (
-  /spawnSync\(|process\.env(?:\.|\[)/u.test(claudeInstallation) ||
-  !claudeInstallation.includes('Config.NonEmptyString("REVIEW_INSTALL_RUNTIME")') ||
-  !claudeInstallation.includes('Config.NonEmptyString("REVIEW_INSTALL_ENTRYPOINT")') ||
-  !claudeInstallation.includes("yield* execFileClosedStdin(")
-) {
-  throw new Error("Claude installation must use caller Config and scoped native host processes")
+// Only these exact reviewed synchronous read-only discovery bodies may consult
+// ambient profile selection. Installation effects still use caller Config.
+const registrationDiscovery = {
+  claude: {
+    name: "Claude",
+    variable: "CLAUDE_CONFIG_DIR",
+    sha256: "75488c7884e6f91877657f8ebaf2995e9dee721e579f5d175d489c35f151d602"
+  },
+  codex: {
+    name: "Codex",
+    variable: "CODEX_HOME",
+    sha256: "2b813708446b0bf7d89c16c9ee282764e48fef3fb99b58350b8b4266999e0482"
+  }
 }
-
-const codexInstallation = readCodexInstallationSource(root)
-if (
-  /spawnSync\(|process\.env(?:\.|\[)/u.test(codexInstallation) ||
-  !codexInstallation.includes('Config.NonEmptyString("CODEX_HOME")') ||
-  !codexInstallation.includes('Config.NonEmptyString("REVIEW_INSTALL_RUNTIME")') ||
-  !codexInstallation.includes('Config.NonEmptyString("REVIEW_INSTALL_ENTRYPOINT")') ||
-  !codexInstallation.includes("yield* execFileClosedStdin(")
-) {
-  throw new Error("Codex installation must use caller Config and scoped native host processes")
+export function assertInstallationConfigurationBoundary(runtime, source) {
+  const reviewed = registrationDiscovery[runtime]
+  const discovery = source.match(new RegExp(`export const has${reviewed.name}Registration = [\\s\\S]*?\\n}`))?.[0]
+  const effectSource =
+    discovery !== undefined && createHash("sha256").update(discovery).digest("hex") === reviewed.sha256
+      ? source.replace(discovery, discovery.replace(`process.env.${reviewed.variable}`, "undefined"))
+      : source
+  if (
+    /spawnSync\(|process\.env(?:\.|\[)/u.test(effectSource) ||
+    (runtime === "codex" && !source.includes('Config.NonEmptyString("CODEX_HOME")')) ||
+    !source.includes('Config.NonEmptyString("REVIEW_INSTALL_RUNTIME")') ||
+    !source.includes('Config.NonEmptyString("REVIEW_INSTALL_ENTRYPOINT")') ||
+    !source.includes("yield* execFileClosedStdin(")
+  )
+    throw new Error(`${reviewed.name} installation must use caller Config and scoped native host processes`)
 }
+assertInstallationConfigurationBoundary("claude", read("packages/administration/src/onboarding/claude-installation.ts"))
+assertInstallationConfigurationBoundary("codex", readCodexInstallationSource(root))
 
 const clientLifecycle = read("packages/administration/src/onboarding/client-lifecycle.ts")
 if (

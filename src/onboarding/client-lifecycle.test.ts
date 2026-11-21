@@ -235,3 +235,26 @@ it("discovers owned registrations including interrupted and damaged installation
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+it("discovers selected ambient profiles while explicit profile destinations take precedence", () => {
+  const root = mkdtempSync(join(tmpdir(), "hapsland-discovery-profile-"))
+  try {
+    for (const host of ["claude", "codex"]) {
+      mkdirSync(join(root, host, ".hapsland"), { recursive: true })
+      writeFileSync(
+        join(root, host, ".hapsland", host === "claude" ? "claude-installation-v1.json" : "installation-v1.json"),
+        "damaged owned state"
+      )
+    }
+    vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "claude"))
+    vi.stubEnv("CODEX_HOME", join(root, "codex"))
+    const flags = new Map([["--pi-home", join(root, "empty-pi")]])
+    expect(registeredClients(flags)).toEqual(["claude", "codex"])
+    flags.set("--claude-home", join(root, "empty-claude"))
+    flags.set("--codex-home", join(root, "empty-codex"))
+    expect(registeredClients(flags)).toEqual([])
+  } finally {
+    vi.unstubAllEnvs()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
