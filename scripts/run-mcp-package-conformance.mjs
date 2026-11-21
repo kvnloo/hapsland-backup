@@ -324,6 +324,11 @@ try {
       )
       entry = registration.transport
       checked("Codex user-profile MCP discovery", registration.name === "hapsland" && entry.type === "stdio")
+      checked(
+        "Codex forwards the user configuration selector by name",
+        JSON.stringify(entry.env_vars) === JSON.stringify(["REVIEW_USER_CONFIG_PATH"]) &&
+          !readFileSync(configPath, "utf8").includes(userConfiguration)
+      )
       await inspectCodexSkills(environment, repositories[0], skillPath)
     } else {
       entry = JSON.parse(readFileSync(configPath, "utf8")).mcpServers.hapsland

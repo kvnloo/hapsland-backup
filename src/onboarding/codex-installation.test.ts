@@ -1940,6 +1940,30 @@ it("installs MCP and the canonical companion skill without hooks, preserves sett
   expect(existsSync(join(root, ".mcp.json"))).toBe(false)
 })
 
+it("forwards only the user configuration selector name in the owned Codex MCP registration", async () => {
+  const { home, bin } = fixture()
+  const selector = join(home, "operator-selected-private-profile.jsonc")
+  const environment = { ...process.env, REVIEW_USER_CONFIG_PATH: selector }
+  const request = { codexHome: home, codexExecutable: bin, integrations: { hooks: false, mcp: true } }
+  const preview = await invoke({ ...request, operation: "install-preview" }, environment)
+  expect(preview.status).toBe("preview")
+  const proposal = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(preview.proposal)
+  expect(
+    (await invoke({ ...request, operation: "install", proposalDigest: proposal.digest }, environment)).status
+  ).toBe("installed")
+  const config = readFileSync(join(home, "config.toml"), "utf8")
+  expect(config).toMatch(/env_vars = \[\s*"REVIEW_USER_CONFIG_PATH"\s*\]/)
+  const ownership = readFileSync(join(home, ".hapsland/installation-v1.json"), "utf8")
+  expect(ownership).toContain('"REVIEW_USER_CONFIG_PATH"')
+  expect(config + ownership + JSON.stringify(preview)).not.toContain(selector)
+  expect(config).not.toContain("[mcp_servers.hapsland.env]")
+  const current = await invoke({ ...request, operation: "update-preview" }, environment)
+  expect(current).toMatchObject({ status: "preview", alreadyCurrent: true })
+  writeFileSync(join(home, "config.toml"), config.replace('"REVIEW_USER_CONFIG_PATH"', '"OPERATOR_CHANGED"'))
+  expect((await invoke({ ...request, operation: "update-preview" }, environment)).status).toBe("conflict")
+  expect(readFileSync(join(home, "config.toml"), "utf8")).toContain('"OPERATOR_CHANGED"')
+})
+
 it("repairs missing MCP resources without enabling hooks, and preserves modified owned skill and server conflicts", async () => {
   const { home, bin } = fixture()
   const selected = { codexHome: home, codexExecutable: bin, integrations: { hooks: false, mcp: true } }

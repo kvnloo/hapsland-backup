@@ -32,7 +32,7 @@ export const cliCommand = (inputs: Inputs) => {
   const command = commandFromEntrypoint(inputs.executable, cli)
   if (!statSync(cli).isFile()) throw new Error("packaged MCP CLI is not a regular file")
   accessSync(cli, constants.R_OK | (extname(cli) === "" ? constants.X_OK : 0))
-  return { command: command.executable, args: [...command.args, "mcp"] }
+  return { command: command.executable, args: [...command.args, "mcp"], env_vars: ["REVIEW_USER_CONFIG_PATH"] }
 }
 export const desiredMcp = (inputs: Inputs): { ownership: McpOwnership; skill: string } => {
   const skill = readFileSync(
@@ -58,7 +58,11 @@ export const mcpEntry = (document: Record<string, unknown>): unknown => {
   if (!isObject(document.mcp_servers)) throw new Error("Codex mcp_servers must be a table")
   return document.mcp_servers.hapsland
 }
-export const expectedEntry = (record: McpOwnership) => ({ command: record.command, args: record.args })
+export const expectedEntry = (record: McpOwnership) => ({
+  command: record.command,
+  args: record.args,
+  env_vars: record.env_vars
+})
 export const inspectMcp = (inputs: Inputs, record: OwnershipRecord, allowMissing = false): void => {
   const actual = mcpEntry(validateToml(snapshot(inputs.paths.config)))
   if (record.mcp === undefined) {
@@ -76,7 +80,7 @@ export const inspectMcp = (inputs: Inputs, record: OwnershipRecord, allowMissing
 /** Replace only the owned table; unrelated TOML bytes stay intact. */
 export const withMcpEntry = (
   file: FileSnapshot,
-  entry: { command: string; args: ReadonlyArray<string> } | undefined
+  entry: Pick<McpOwnership, "command" | "args" | "env_vars"> | undefined
 ): string => {
   const parsed = validateToml(file)
   const prior = mcpEntry(parsed)

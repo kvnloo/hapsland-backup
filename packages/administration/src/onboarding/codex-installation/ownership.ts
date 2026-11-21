@@ -7,6 +7,7 @@ import { isObject } from "./configuration-values.ts"
 export const McpOwnership = Schema.Struct({
   command: Schema.String,
   args: Schema.Array(Schema.String),
+  env_vars: Schema.Array(Schema.String),
   skillDigest: Schema.String
 })
 export type McpOwnership = typeof McpOwnership.Type

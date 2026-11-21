@@ -87,6 +87,21 @@ classifier requests. Checks use the configured backend, file policy and
 credentials and may incur charges. The skill obtains approval of the exact
 validated proposal before saving a rule; tool permission is not that approval.
 
+The owned registration forwards `REVIEW_USER_CONFIG_PATH` by name using Codex's
+[`env_vars` allowlist](https://learn.chatgpt.com/docs/extend/mcp#stdio-servers).
+Its value is read from the Codex process environment when the MCP child starts;
+the installer does not save that value in the registration. This preserves the
+selected user configuration's privacy exclusions, backend settings and Personal
+rule destinations. Start Codex with that selector when using a custom profile.
+
+Codex filters other environment variables. An environment-only review credential
+may therefore be unavailable in the MCP child. Explicitly configure the needed
+credential name in Codex's host environment allowlist, or use Hapsland's eligible
+[key files or native credential store](installation-workflows.md#credentials-and-login).
+Hapsland does not automatically forward provider keys or store their values in
+MCP configuration. A missing credential produces an unavailable check, not a
+clear result. Host tool permission still does not approve saving a rule.
+
 Update and repair preserve the recorded integration selection. They can restore
 missing owned registrations or skill files. Unrelated MCP servers and settings
 are preserved. A modified owned server entry, modified skill or unowned name
