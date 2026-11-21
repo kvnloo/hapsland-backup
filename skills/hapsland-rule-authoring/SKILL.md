@@ -48,7 +48,11 @@ Inspect and repair the candidate or permitted evidence, revise and revalidate, r
 
 Present the exact final complete content and all destinations, scope, connections, selection and activation effects together, with **Save**, **Revise** and **Skip** choices. Preserve the exact previewed changes and digest while waiting.
 
-Use native elicitation only if it presents that complete proposal and obtains the operator's own choice. An automatic transport response, tool permission, bare boolean or code-edit permission is not approval to persist a rule. If the native path cannot obtain the choice, use the host agent's question path or an ordinary conversational question and wait for the operator. If no path can obtain actual approval, leave the proposal pending and do not apply.
+Prefer native elicitation when it presents the complete proposal and obtains the operator's own choice. Otherwise use the host's interactive question dialogue with **Save**, **Revise** and **Skip** choices and free-text revision input. Use an ordinary conversational question only when the interactive UI is unavailable. If no path can obtain the operator's actual choice, leave the proposal pending and do not apply.
+
+Save is the operator's choice, not a required word. An unambiguous affirmative such as “yes”, “ok” or “go ahead” in answer to approval of the exact current complete proposal means **Save**. Act on that answered choice without asking the same question again. If the reply or its intended proposal is ambiguous, leave pending and clarify.
+
+An automatic transport response, programmatic approval boolean, tool permission or code-edit permission does not establish the operator's choice. When a trusted parent host forwards the actual operator's reply from that approval path verbatim with its provenance and the unchanged complete proposal, scope and preview digest, treat it as forwarded human choice. An agent's claim of approval or a synthesized transport response cannot substitute for that reply.
 
 - **Save:** Apply only the identical final changes and digest. Generate no replacement wording after approval.
 - **Revise:** Incorporate actionable feedback, preview again, revalidate changed effective inputs and obtain fresh approval. If no requested change is clear, ask what to revise and leave it pending.
