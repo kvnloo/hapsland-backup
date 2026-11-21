@@ -1,5 +1,5 @@
-import { emittedReleaseEntrypoints } from "@hapsland/runtime-environment/runtime/package-runtime"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { emittedReleaseEntrypoints, packageAssetPath } from "@hapsland/runtime-environment/runtime/package-runtime"
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 /** Synthetic installation metadata for deterministic tests, not a release support declaration. */
@@ -22,10 +22,13 @@ export const createInstallationPackageFixture = (root: string) => {
     JSON.stringify({ name: "@hapsland/hapsland", version: "0.1.0", type: "module" })
   )
   writeFileSync(join(packageRoot, "package-runtime.json"), JSON.stringify(installationPackageDeclaration()))
-  for (const role of ["hook", "parser", "resident"] as const) {
+  for (const role of ["cli", "hook", "parser", "resident"] as const) {
     const path = join(packageRoot, emittedReleaseEntrypoints[role])
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, "// deterministic installation fixture\n")
   }
+  const skill = join(packageRoot, "skills/hapsland-rule-authoring/SKILL.md")
+  mkdirSync(dirname(skill), { recursive: true })
+  writeFileSync(skill, readFileSync(packageAssetPath("skills/hapsland-rule-authoring/SKILL.md"), "utf8"))
   return entrypoint
 }

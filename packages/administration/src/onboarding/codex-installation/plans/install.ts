@@ -1,3 +1,4 @@
+import { extendMcpPlan, mcpOnlyPlan } from "../mcp.ts"
 import { readOwnership, type OwnershipRecord } from "../ownership.ts"
 import {
   postToolUseGroups,
@@ -88,6 +89,7 @@ const installMutations = (
 ]
 
 export const makeInstallPlan = (request: InstallationRequest, inputs: ReturnType<typeof buildInputs>) => {
+  if (!inputs.integrations.hooks) return mcpOnlyPlan(request, inputs, "install")
   const config = snapshot(inputs.paths.config)
   const hooks = snapshot(inputs.paths.hooks)
   const ownership = snapshot(inputs.paths.ownership)
@@ -128,10 +130,14 @@ export const makeInstallPlan = (request: InstallationRequest, inputs: ReturnType
   const featureOwned = installFeatureOwned(existingRecord, config, nextConfig)
   const record = makeOwnershipRecord(inputs, fingerprint, featureOwned)
   const nextOwnership = encodeJson(record)
-  const mutations = [
-    ...bindingMutation(inputs, existingRecord, request.reinstall),
-    ...installMutations(config, hooks, ownership, nextConfig, nextHooks, nextOwnership, resetJournal)
-  ]
+  const mutations = extendMcpPlan(
+    inputs,
+    [
+      ...bindingMutation(inputs, existingRecord, request.reinstall),
+      ...installMutations(config, hooks, ownership, nextConfig, nextHooks, nextOwnership, resetJournal)
+    ],
+    "install"
+  )
   return {
     inputs,
     mutations,

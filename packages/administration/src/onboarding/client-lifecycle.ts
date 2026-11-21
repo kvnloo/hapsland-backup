@@ -265,10 +265,18 @@ export const formatProposal = (value: unknown): string[] => {
   const target = record(proposal.target)
   const owned = record(proposal.ownedChanges)
   const hooks = record(owned.hooks ?? owned.hook ?? target.hook)
+  const mcp = record(owned.mcp ?? target.mcp)
+  const server = record(mcp.ownership)
   return [
     ...proposalVersionLines(current, target),
     ...proposalChangeLines(proposal.changes),
     ...journalReplacementLines(record(proposal.journalReplacement)),
+    ...(server.command === undefined
+      ? []
+      : [
+          `MCP stdio command: ${String(server.command)} ${Array.isArray(server.args) ? server.args.map(String).join(" ") : ""}.`,
+          `Canonical companion skill: ${String(mcp.skillFile)}.`
+        ]),
     ...Object.entries(record(hooks.groups)).flatMap(([event, group]) => hookGroupLines(event, group, hooks.file))
   ]
 }

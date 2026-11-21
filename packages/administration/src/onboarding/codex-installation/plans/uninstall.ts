@@ -1,7 +1,8 @@
+import { extendMcpPlan, mcpOnlyPlan } from "../mcp.ts"
 import { type OwnershipRecord, readOwnership } from "../ownership.ts"
 import type { buildInputs } from "../runtime-inputs.ts"
 import { type JsonObject, isObject, parseJsonObject, encodeJson } from "../configuration-values.ts"
-import { HOOKS_FEATURE_FINGERPRINT, disableOwnedFeature, validateToml } from "../hooks-feature.ts"
+import { validateOwnedHooksFeatureRemoval, disableOwnedFeature, validateToml } from "../hooks-feature.ts"
 import { markerCount, withComposedGroups, removeOwnedHook } from "../hooks.ts"
 import { type FileSnapshot, snapshot, type Mutation, mutation } from "../file-snapshots.ts"
 import { type InstallationRequest } from "../request.ts"
@@ -14,15 +15,7 @@ const validateOwnedFeatureRemoval = (
   parsedConfig: JsonObject
 ) => {
   const feature = record.owned.find((entry) => entry.kind === "feature" && entry.file === inputs.paths.config)
-  if (feature === undefined) return false
-  const features = parsedConfig.features
-  if (
-    feature.fingerprint !== HOOKS_FEATURE_FINGERPRINT ||
-    (isObject(features) && features.hooks !== undefined && features.hooks !== true)
-  ) {
-    throw new Error("owned Codex feature value was locally modified; it was preserved")
-  }
-  return true
+  return validateOwnedHooksFeatureRemoval(feature, parsedConfig)
 }
 
 const unrelatedHooksRemain = (root: JsonObject) =>
@@ -38,6 +31,7 @@ const uninstallConfig = (config: FileSnapshot, parsed: JsonObject, featureOwned:
 }
 
 export const makeUninstallPlan = (request: InstallationRequest, inputs: ReturnType<typeof buildInputs>) => {
+  if (!inputs.integrations.hooks) return mcpOnlyPlan(request, inputs, "uninstall")
   const record = readOwnership(inputs.paths.ownership)
   if (record === undefined) {
     withComposedGroups(parseJsonObject(snapshot(inputs.paths.hooks)), undefined, undefined)
@@ -64,22 +58,26 @@ export const makeUninstallPlan = (request: InstallationRequest, inputs: ReturnTy
   const nextHooks = encodeJson(nextHookRoot)
   const featureWasOwned = validateOwnedFeatureRemoval(record, inputs, parsedConfig)
   const nextConfig = uninstallConfig(config, parsedConfig, featureWasOwned, nextHookRoot)
-  const mutations = [
-    ...(nextConfig === config.content
-      ? []
-      : [mutation(config, nextConfig, "remove the owned Codex hooks feature entry")]),
-    ...(nextHooks === hooks.content
-      ? []
-      : [mutation(hooks, nextHooks, "remove only the owned PostToolUse adapter hook")]),
-    ...(() => {
-      const binding = record.owned.find((entry) => entry.file === inputs.paths.binding && entry.kind === "hook")
-      if (binding === undefined) return []
-      const before = snapshot(inputs.paths.binding)
-      if (before.exists && bindingDigest(before.content) !== binding.fingerprint)
-        throw new Error("owned hook launcher was locally modified")
-      return before.exists ? [mutation(before, null, "remove the owned hook launcher")] : []
-    })(),
-    mutation(ownership, null, "remove the versioned ownership record")
-  ]
+  const mutations = extendMcpPlan(
+    inputs,
+    [
+      ...(nextConfig === config.content
+        ? []
+        : [mutation(config, nextConfig, "remove the owned Codex hooks feature entry")]),
+      ...(nextHooks === hooks.content
+        ? []
+        : [mutation(hooks, nextHooks, "remove only the owned PostToolUse adapter hook")]),
+      ...(() => {
+        const binding = record.owned.find((entry) => entry.file === inputs.paths.binding && entry.kind === "hook")
+        if (binding === undefined) return []
+        const before = snapshot(inputs.paths.binding)
+        if (before.exists && bindingDigest(before.content) !== binding.fingerprint)
+          throw new Error("owned hook launcher was locally modified")
+        return before.exists ? [mutation(before, null, "remove the owned hook launcher")] : []
+      })(),
+      mutation(ownership, null, "remove the versioned ownership record")
+    ],
+    "uninstall"
+  )
   return { inputs, mutations, digest: installationDigest("uninstall", inputs.home, mutations), alreadyRemoved: false }
 }

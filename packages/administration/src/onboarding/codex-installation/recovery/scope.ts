@@ -1,3 +1,4 @@
+import { validateMcpRecovery } from "./mcp.ts"
 import { validateInstallRecoveryPlan } from "./install.ts"
 import { validateUpdateRecoveryPlan } from "./update.ts"
 import { validateUninstallRecoveryPlan } from "./uninstall.ts"
@@ -36,6 +37,7 @@ const validateJournalIntegrity = (journal: Journal, inputs: ReturnType<typeof bu
     throw new Error("recovery journal proposal digest does not match its declared changes")
   }
 
+  if (validateMcpRecovery(journal, inputs)) return true
   const plan = recoveryPlan(journal, inputs)
   validateRecoveryBinding(journal, inputs, plan)
   recoveryValidators[journal.operation](journal, inputs, plan)
@@ -55,14 +57,20 @@ const validateUnchangedRecoveryFeature = (journal: Journal, inputs: ReturnType<t
 }
 
 export const validateJournalScope = (journal: Journal, inputs: ReturnType<typeof buildInputs>) => {
-  const allowed = new Set([inputs.paths.config, inputs.paths.hooks, inputs.paths.ownership, inputs.paths.binding])
+  const allowed = new Set([
+    inputs.paths.config,
+    inputs.paths.hooks,
+    inputs.paths.ownership,
+    inputs.paths.binding,
+    inputs.paths.skill
+  ])
   if (
     journal.mutations.some((change) => !allowed.has(change.path)) ||
     new Set(journal.mutations.map((change) => change.path)).size !== journal.mutations.length
   ) {
     throw new Error("recovery journal contains an unexpected or duplicate configuration target")
   }
-  validateJournalIntegrity(journal, inputs)
+  if (validateJournalIntegrity(journal, inputs)) return
   validateUnchangedRecoveryFeature(journal, inputs)
   for (const change of journal.mutations) validateRecoveryMutation(change, journal.operation, inputs)
 }

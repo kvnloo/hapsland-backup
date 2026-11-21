@@ -48,6 +48,11 @@ const validate = <A>(read: () => A) =>
   })
 
 const profiles = {
+  integrations: Flag.Literals("integrations", ["hooks", "mcp", "both"]).pipe(
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+    Flag.withDescription("Install hooks, MCP plus companion skill, or both; omitted preserves installed selection")
+  ),
   host: Flag.Literals("host", SUPPORTED_CLIENTS).pipe(
     Flag.atMost(1),
     Flag.map((values) => values[0]),

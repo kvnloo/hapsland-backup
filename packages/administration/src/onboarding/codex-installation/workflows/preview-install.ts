@@ -1,3 +1,4 @@
+import { desiredMcp } from "../mcp.ts"
 import { OWNERSHIP_VERSION } from "../ownership.ts"
 import type { buildInputs } from "../runtime-inputs.ts"
 import { packagedRuntimeEntrypoints, resolveInputs, compatibility } from "../runtime-inputs.ts"
@@ -19,35 +20,50 @@ export const ownedChanges = (inputs: ReturnType<typeof buildInputs>) => ({
     resident: commandFromEntrypoint(inputs.executable, packagedRuntimeEntrypoints(inputs.entrypoint).resident),
     observed: inputs.runtimeProbe.observed
   },
-  feature: { file: inputs.paths.config, table: "features", key: "hooks", value: true },
-  hook: {
-    file: inputs.paths.hooks,
-    event: "PostToolUse",
-    matcher: commandHooks.codex.afterEdit.matcher,
-    handlers: ownedGroup(
-      inputs.executable,
-      inputs.entrypoint,
-      inputs.codex.version,
-      inputs.controlledReviewer,
-      inputs.binding?.command
-    ).hooks,
-    groups: {
-      PostToolUse: ownedGroup(
-        inputs.executable,
-        inputs.entrypoint,
-        inputs.codex.version,
-        inputs.controlledReviewer,
-        inputs.binding?.command
-      ),
-      ...composedGroups(
-        inputs.executable,
-        inputs.entrypoint,
-        inputs.codex.version,
-        inputs.controlledReviewer,
-        inputs.binding?.command
-      )
-    }
-  },
+  ...(inputs.integrations.mcp
+    ? {
+        mcp: {
+          description: "Hapsland stdio MCP plus companion skill",
+          ...desiredMcp(inputs),
+          file: inputs.paths.config,
+          skillFile: inputs.paths.skill
+        }
+      }
+    : {}),
+  ...(inputs.integrations.hooks
+    ? {
+        feature: { file: inputs.paths.config, table: "features", key: "hooks", value: true },
+        hook: {
+          file: inputs.paths.hooks,
+          event: "PostToolUse",
+          matcher: commandHooks.codex.afterEdit.matcher,
+          handlers: ownedGroup(
+            inputs.executable,
+            inputs.entrypoint,
+            inputs.codex.version,
+            inputs.controlledReviewer,
+            inputs.binding?.command
+          ).hooks,
+          groups: {
+            PostToolUse: ownedGroup(
+              inputs.executable,
+              inputs.entrypoint,
+              inputs.codex.version,
+              inputs.controlledReviewer,
+              inputs.binding?.command
+            ),
+            ...composedGroups(
+              inputs.executable,
+              inputs.entrypoint,
+              inputs.codex.version,
+              inputs.controlledReviewer,
+              inputs.binding?.command
+            )
+          }
+        }
+      }
+    : {}),
+  integrations: inputs.integrations,
   ownership: { file: inputs.paths.ownership, version: OWNERSHIP_VERSION, adapter: "codex" }
 })
 
@@ -122,9 +138,10 @@ export const previewCodexInstallation = Effect.fn("CodexInstallation.preview")(f
       installed: plan.alreadyInstalled,
       recovery: { required: false },
       trust: {
-        status: "native-confirmation-required",
-        guidance:
-          "Start Codex normally in the repository and approve its native repository and hook review prompts. No trust record or bypass flag was changed."
+        status: inputs.integrations.hooks ? "native-confirmation-required" : "host-confirmation-required",
+        guidance: inputs.integrations.hooks
+          ? "Start Codex normally in the repository and approve its native repository and hook review prompts. No trust record or bypass flag was changed."
+          : "Restart Codex in the selected profile to discover MCP and the companion skill. Every tool call explicitly names its repository. Rule application still needs exact operator approval."
       },
       completed: [],
       pending: [

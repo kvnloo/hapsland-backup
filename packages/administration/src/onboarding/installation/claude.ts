@@ -4,6 +4,7 @@ import { type InstallationOperation, installationReinstall, installationDigest }
 const claudeInstallationRequest = (operation: Extract<InstallationOperation, { host: "claude" }>) => {
   return {
     ...installationReinstall(operation),
+    ...(operation.integrations === undefined ? {} : { integrations: operation.integrations }),
     ...(operation.claudeHome === undefined ? {} : { claudeHome: operation.claudeHome }),
     ...(!("claudeExecutable" in operation) || operation.claudeExecutable === undefined
       ? {}

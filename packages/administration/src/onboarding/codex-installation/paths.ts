@@ -3,6 +3,7 @@ import { join } from "node:path"
 const PRODUCT_DIRECTORY = ".hapsland"
 
 export const pathsFor = (home: string) => ({
+  skill: join(home, "skills", "hapsland-rule-authoring", "SKILL.md"),
   binding: join(home, PRODUCT_DIRECTORY, "codex-hook-launcher.sh"),
   config: join(home, "config.toml"),
   hooks: join(home, "hooks.json"),

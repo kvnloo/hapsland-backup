@@ -7,7 +7,7 @@ import {
   type InstallationRequest,
   CodexInstallationError
 } from "../request.ts"
-import { updateRecoveryCommand, updateChangesNativeHooks } from "./preview-update.ts"
+import { updateRecoveryCommand, updateChangesNativeHooks, updateRequiresRestart } from "./preview-update.ts"
 import { validateJournalScope } from "../recovery/scope.ts"
 import { recoveryConflictResult, packageMetadataConflictResult, conflictResult, unsupportedResult } from "../results.ts"
 import { applyJournal } from "../journal-application.ts"
@@ -158,9 +158,9 @@ const applyUpdatePlan = (
       status: updateChangesNativeHooks(plan, inputs) ? "renewal-required" : "unchanged",
       bypassUsed: false
     },
-    restart: { required: updateChangesNativeHooks(plan, inputs), processesStopped: false },
+    restart: { required: updateRequiresRestart(plan, inputs), processesStopped: false },
     completed: plan.mutations.map((change) => change.description),
-    pending: updateChangesNativeHooks(plan, inputs)
+    pending: updateRequiresRestart(plan, inputs)
       ? ["restart Codex after current work completes and approve renewed hook trust if prompted"]
       : []
   }

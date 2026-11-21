@@ -1,3 +1,4 @@
+import { IntegrationSelection } from "../integration-selection.ts"
 import type { InvocationSession } from "../../invocation/session.ts"
 import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
@@ -49,6 +50,7 @@ export const InstallationOperation = Schema.Union([
   }),
   installationOperationsFor({
     host: Schema.optionalKey(Schema.Literal("codex")),
+    integrations: Schema.optionalKey(IntegrationSelection),
     codexHome: Schema.optionalKey(Schema.NonEmptyString),
     codexExecutable: Schema.optionalKey(Schema.NonEmptyString)
   }),
@@ -59,6 +61,7 @@ export const InstallationOperation = Schema.Union([
   }),
   installationOperationsFor({
     host: Schema.Literal("claude"),
+    integrations: Schema.optionalKey(IntegrationSelection),
     claudeHome: Schema.optionalKey(Schema.NonEmptyString),
     claudeExecutable: Schema.optionalKey(Schema.NonEmptyString)
   }),
