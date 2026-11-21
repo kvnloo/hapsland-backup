@@ -190,3 +190,17 @@ test("indexed callback profile cannot authorize appended constructor dispatch", 
     /computed callable member/
   )
 })
+test("Effect MCP Tool prototype-pollution validation is source pinned without admitting constructor loaders", async () => {
+  const { readFileSync } = await import("node:fs")
+  const file = "node_modules/effect/dist/ai/Tool.js"
+  const text = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
+  externalLoaderProfile(text, file, options)
+  for (const changed of [
+    text + '; (() => {}).constructor("return require")()',
+    text.replace('Object.hasOwn(node.constructor, "prototype")', 'node.constructor("return require")()'),
+    text + "\n// changed dependency bytes"
+  ]) {
+    assert.throws(() => externalLoaderProfile(changed, file, options), /reflective member constructor/)
+  }
+  assert.throws(() => externalLoaderProfile(text, "asset.js", options), /reflective member constructor/)
+})
