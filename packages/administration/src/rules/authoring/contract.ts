@@ -16,3 +16,5 @@ export const RuleContentChange = Schema.Struct({
 export type RuleContentChange = typeof RuleContentChange.Type
 export const RuleChanges = Schema.Array(RuleContentChange).check(Schema.isMinLength(1), Schema.isMaxLength(10))
 export type RuleChanges = typeof RuleChanges.Type
+
+export const PreviewDigest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))

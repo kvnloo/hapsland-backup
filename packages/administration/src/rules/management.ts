@@ -1,3 +1,7 @@
+import type { RuleChanges } from "./authoring/contract.ts"
+import { previewRuleChanges } from "./authoring/plan.ts"
+import { loadRuleInventory } from "./inventory.ts"
+import { localFailureMessage } from "../invocation/failure-message.ts"
 import { ruleOperation } from "@hapsland/review-definition/rules/operations"
 import { withInstallationLock } from "../onboarding/installation-lock.ts"
 import { createHash } from "node:crypto"
@@ -364,4 +368,120 @@ export const applyRuleChange = Effect.fn("Rules.applyChange")((
       ? resolve(options.userConfigPath ?? DEFAULT_USER_CONFIGURATION_FILE)
       : join(root, ".hapsland.jsonc")
   return withInstallationLock(`${configurationPath}.rules-lock`, applyRuleChangeUnlocked(root, change, digest, options))
+})
+
+type ObservedContent = "exact" | "absent" | "different" | "unknown"
+const observeContent = (path: string, expected: string): ObservedContent => {
+  try {
+    return readFileSync(path, "utf8") === expected ? "exact" : "different"
+  } catch (error) {
+    return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+      ? "absent"
+      : "unknown"
+  }
+}
+
+const applyExactRuleChangesUnlocked = Effect.fn("Rules.applyExactChangesUnlocked")(function* (
+  root: string,
+  changes: RuleChanges,
+  previewDigest: string,
+  options: LoadConfigurationOptions
+) {
+  const plan = yield* previewRuleChanges(root, changes, options)
+  if (plan.previewDigest !== previewDigest)
+    return yield* configurationError(
+      plan.repository,
+      "previewDigest",
+      "rules plan is stale or changed; inspect and preview again before applying"
+    )
+  const completed = new Set<string>()
+  const written = yield* Effect.try({
+    try: () => {
+      for (const file of plan.files) {
+        mkdirSync(dirname(file.path), { recursive: true, mode: 0o700 })
+        writeFileSync(file.path, file.after, { encoding: "utf8", flag: "wx", mode: 0o600 })
+        completed.add(file.path)
+      }
+      for (const configuration of plan.configurations) {
+        if (configuration.after !== configuration.before)
+          atomicInstallationFile(configuration.path, configuration.after)
+        completed.add(configuration.path)
+      }
+    },
+    catch: localFailureMessage
+  }).pipe(Effect.result)
+  const inventory = yield* loadRuleInventory(plan.repository, options).pipe(Effect.result)
+  const files = plan.files.map((file) => {
+    const actual =
+      inventory._tag === "Success" ? inventory.success.rules.find((rule) => rule.id === file.id) : undefined
+    const activation =
+      inventory._tag === "Failure"
+        ? ("unknown" as const)
+        : actual === undefined
+          ? ("not-connected" as const)
+          : actual.enabled
+            ? ("enabled" as const)
+            : ("disabled" as const)
+    return {
+      path: file.path,
+      id: file.id,
+      scope: file.scope,
+      saved: observeContent(file.path, file.after),
+      activation,
+      write: completed.has(file.path) ? ("completed" as const) : ("incomplete" as const)
+    }
+  })
+  const configurations = plan.configurations.map((configuration) => ({
+    path: configuration.path,
+    scope: configuration.scope,
+    write: completed.has(configuration.path) ? ("completed" as const) : ("incomplete" as const),
+    observed: observeContent(configuration.path, configuration.after)
+  }))
+  const observed =
+    inventory._tag === "Success" &&
+    files.every(
+      (file) =>
+        file.saved === "exact" &&
+        file.activation === (plan.rules.find((rule) => rule.id === file.id)?.enabled ? "enabled" : "disabled")
+    ) &&
+    configurations.every((configuration) => configuration.observed === "exact")
+  return {
+    version: 1 as const,
+    operation: "rule-apply" as const,
+    repository: plan.repository,
+    previewDigest,
+    status:
+      written._tag === "Success" && observed
+        ? ("completed" as const)
+        : completed.size > 0
+          ? ("partial" as const)
+          : ("failed" as const),
+    files,
+    configurations,
+    ...(written._tag === "Failure"
+      ? { reason: written.failure }
+      : observed
+        ? {}
+        : { reason: "Saved or active state could not be confirmed; inspect actual state before further writes." }),
+    ...(inventory._tag === "Failure" ? { inspectionFailure: localFailureMessage(inventory.failure) } : {}),
+    classifierCalls: 0,
+    validation: "not-run" as const
+  }
+})
+
+/** Exact approved bytes are replayed through the read owner while the existing mutation locks are held. */
+export const applyRuleChanges = Effect.fn("Rules.applyExactChanges")(function* (
+  root: string,
+  changes: RuleChanges,
+  previewDigest: string,
+  options: LoadConfigurationOptions = {}
+) {
+  const initial = yield* previewRuleChanges(root, changes, options)
+  let operation: Effect.Effect<
+    Effect.Success<ReturnType<typeof applyExactRuleChangesUnlocked>>,
+    unknown
+  > = applyExactRuleChangesUnlocked(initial.repository, changes, previewDigest, options)
+  for (const path of [...new Set(initial.configurations.map((configuration) => configuration.path))].sort().reverse())
+    operation = withInstallationLock(`${path}.rules-lock`, operation)
+  return yield* operation
 })

@@ -7,7 +7,7 @@
 **Expected use:** Inspect navigation and approval boundaries; run `npm run interaction:diagrams:check` to check freshness without writing.
 **Lifecycle:** Regenerate with `npm run interaction:diagrams:write` whenever the production reducer, interpreter or generated flow changes. Review when the accepted rules interaction changes.
 
-Choose the rule scope, review the proposed changes, then confirm before applying them. Declining leaves rules unchanged. Back returns to the preview or scope choice; Exit ends the conversation. If the proposal changes, Hapsland shows a fresh preview and asks for approval again.
+Choose the rule scope, review the proposed changes, then confirm before applying them. Revise obtains a fresh owner preview before approval; Skip or declining leaves rules unchanged. Back returns to the preview or scope choice; Exit ends the conversation. If the proposal changes, Hapsland shows a fresh preview and asks for approval again.
 
 ```mermaid
 flowchart TD
@@ -21,9 +21,11 @@ flowchart TD
   Scope -->|"Scope selected"| Previewing
   Previewing -->|"Preview ready"| Preview
   Preview -->|"Continue"| Approval
-  Approval -->|"Yes"| Applying
+  Approval -->|"Save"| Applying
   Applying -->|"Rule changes applied"| Done
-  Approval -->|"Decline"| Done
+  Preview -->|"Revise"| Previewing
+  Preview -->|"Skip"| Done
+  Approval -->|"Skip"| Done
   Approval -->|"Back"| Preview
   Preview -->|"Back"| Scope
   Scope -->|"Exit or end of input"| Cancelled

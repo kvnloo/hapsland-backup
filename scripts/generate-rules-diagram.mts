@@ -17,6 +17,26 @@ const scenarios: { name: string; steps: ScriptStep[]; stale?: boolean; outcome: 
     writes: 1
   },
   {
+    name: "revise",
+    steps: [
+      { kind: "choose", index: 0 },
+      { kind: "choose", index: 1 },
+      { kind: "choose", index: 0 },
+      { kind: "confirm", line: "y" }
+    ],
+    outcome: "applied",
+    writes: 1
+  },
+  {
+    name: "skip",
+    steps: [
+      { kind: "choose", index: 0 },
+      { kind: "choose", index: 2 }
+    ],
+    outcome: "declined",
+    writes: 0
+  },
+  {
     name: "decline",
     steps: [
       { kind: "choose", index: 0 },
@@ -98,6 +118,7 @@ export const generateRulesDiagram = Effect.gen(function* () {
       assert.equal(outcome.model.outcome ?? outcome.model.phase, scenario.outcome, scenario.name)
       assert.equal(writes, scenario.writes, scenario.name)
       assert.equal(script.remaining(), 0, "Every replay must consume precisely its declared answers")
+      if (scenario.name === "revise") assert.equal(preview, 2, "Revise must obtain a new owner preview")
       if (scenario.stale) {
         assert.equal(preview, 2)
         assert.equal(transitions.filter((t) => t.event.action.kind === "approve").length, 2)
@@ -110,7 +131,7 @@ export const generateRulesDiagram = Effect.gen(function* () {
       const action = event.action
       const label =
         action.kind === "approve"
-          ? `approve ${action.yes ? "y" : "non-y"}`
+          ? `approve ${action.choice}`
           : action.kind === "observed"
             ? `observed ${action.outcome}`
             : action.kind
@@ -125,7 +146,7 @@ export const generateRulesDiagram = Effect.gen(function* () {
 **Expected use:** Inspect navigation and approval boundaries; run \`npm run interaction:diagrams:check\` to check freshness without writing.
 **Lifecycle:** Regenerate with \`npm run interaction:diagrams:write\` whenever the production reducer, interpreter or generated flow changes. Review when the accepted rules interaction changes.
 
-Choose the rule scope, review the proposed changes, then confirm before applying them. Declining leaves rules unchanged. Back returns to the preview or scope choice; Exit ends the conversation. If the proposal changes, Hapsland shows a fresh preview and asks for approval again.
+Choose the rule scope, review the proposed changes, then confirm before applying them. Revise obtains a fresh owner preview before approval; Skip or declining leaves rules unchanged. Back returns to the preview or scope choice; Exit ends the conversation. If the proposal changes, Hapsland shows a fresh preview and asks for approval again.
 
 \`\`\`mermaid
 flowchart TD
