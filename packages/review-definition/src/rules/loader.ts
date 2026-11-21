@@ -113,11 +113,12 @@ const loadAuthoredRule = Effect.fn("Rules.loadAuthored")(function* (
   const requested = isAbsolute(reference.path)
     ? resolve(reference.path)
     : resolve(dirname(resolve(origin.source)), reference.path)
-  const overlay = overlays?.find((entry) => entry.path === requested)
+  const directOverlay = overlays?.find((entry) => entry.path === requested)
   const path =
-    overlay === undefined
+    directOverlay === undefined
       ? yield* read(origin.source, origin.field, () => realpath(requested), `rule file '${requested}' does not exist`)
       : requested
+  const overlay = directOverlay ?? overlays?.find((entry) => entry.path === path)
   yield* checkRuleLocation(root, path, origin)
   const text = overlay?.content ?? (yield* read(path, "$", () => readFile(path, "utf8"), "rule could not be read"))
   const decoded = yield* validate(path, "$", () => decodeRuleText(text, path, origin))
