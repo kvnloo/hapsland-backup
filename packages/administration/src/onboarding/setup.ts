@@ -1,3 +1,4 @@
+import type { IntegrationSelection } from "./integration-selection.ts"
 import { CLIENT_NAMES } from "@hapsland/runtime-environment/runtime/agent-clients"
 import { previewDefaultRules, applyDefaultRules } from "./default-rules.ts"
 import { configurationError } from "@hapsland/runtime-inputs/configuration/errors"
@@ -42,9 +43,19 @@ type SetupFields = {
 
 export type SetupRequest = SetupFields &
   (
-    | { readonly host: "codex"; readonly codexHome?: string; readonly codexExecutable?: string }
+    | {
+        readonly host: "codex"
+        readonly codexHome?: string
+        readonly codexExecutable?: string
+        readonly integrations?: IntegrationSelection
+      }
     | { readonly host: "pi"; readonly piHome?: string; readonly piExecutable?: string }
-    | { readonly host: "claude"; readonly claudeHome?: string; readonly claudeExecutable?: string }
+    | {
+        readonly host: "claude"
+        readonly claudeHome?: string
+        readonly claudeExecutable?: string
+        readonly integrations?: IntegrationSelection
+      }
   )
 
 type StageStatus =
@@ -84,6 +95,7 @@ const text = (value: unknown): string | undefined => (typeof value === "string" 
 const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : [])
 
 const installationRequest = (request: Extract<SetupRequest, { host: "codex" }>): InstallationRequest => ({
+  ...(request.integrations === undefined ? {} : { integrations: request.integrations }),
   ...(request.codexHome === undefined ? {} : { codexHome: request.codexHome }),
   ...(request.codexExecutable === undefined ? {} : { codexExecutable: request.codexExecutable })
 })
@@ -677,6 +689,7 @@ const installationOperations = (request: SetupRequest) => {
     }
   }
   const claudeRequest = {
+    ...(request.integrations === undefined ? {} : { integrations: request.integrations }),
     ...(request.claudeHome === undefined ? {} : { claudeHome: request.claudeHome }),
     ...(request.claudeExecutable === undefined ? {} : { claudeExecutable: request.claudeExecutable })
   }

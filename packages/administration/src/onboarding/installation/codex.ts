@@ -12,6 +12,7 @@ import { doctorRepositoryChecks } from "./diagnostics.ts"
 const codexInstallationRequest = (operation: CodexInstallationOperation) => {
   return {
     ...installationReinstall(operation),
+    ...(operation.integrations === undefined ? {} : { integrations: operation.integrations }),
     ...(operation.codexHome === undefined ? {} : { codexHome: operation.codexHome }),
     ...(!("codexExecutable" in operation) || operation.codexExecutable === undefined
       ? {}

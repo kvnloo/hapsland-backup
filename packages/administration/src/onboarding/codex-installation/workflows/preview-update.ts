@@ -20,7 +20,17 @@ export const updateRecoveryCommand = (inputs: ReturnType<typeof buildInputs>, pr
 export const updateChangesNativeHooks = (
   plan: ReturnType<typeof makeUpdatePlan>,
   inputs: ReturnType<typeof buildInputs>
-) => plan.mutations.some((change) => change.path === inputs.paths.hooks || change.path === inputs.paths.config)
+) =>
+  plan.mutations.some(
+    (change) => change.path === inputs.paths.hooks || (inputs.integrations.hooks && change.path === inputs.paths.config)
+  )
+
+export const updateRequiresRestart = (
+  plan: ReturnType<typeof makeUpdatePlan>,
+  inputs: ReturnType<typeof buildInputs>
+) =>
+  updateChangesNativeHooks(plan, inputs) ||
+  plan.mutations.some((change) => change.path === inputs.paths.skill || change.path === inputs.paths.config)
 
 const updatePreviewResult = (
   plan: ReturnType<typeof makeUpdatePlan>,
@@ -47,7 +57,9 @@ const updatePreviewResult = (
         runtimeVersion: expectedRuntimeVersion(inputs.entrypoint),
         ...commandFromEntrypoint(inputs.executable, inputs.entrypoint),
         residentProtocol: inputs.residentProtocol,
-        hook: ownedChanges(inputs).hook
+        hook: ownedChanges(inputs).hook,
+        mcp: ownedChanges(inputs).mcp,
+        integrations: inputs.integrations
       }
     },
     alreadyCurrent: plan.alreadyCurrent,
@@ -60,13 +72,15 @@ const updatePreviewResult = (
         ? "The native hook definitions are unchanged; renewed hook trust is not required."
         : "After current work completes, restart Codex normally and approve renewed native hook trust if prompted. No trust record or bypass flag was changed."
     },
-    restart: { required: updateChangesNativeHooks(plan, inputs), processesStopped: false },
+    restart: { required: updateRequiresRestart(plan, inputs), processesStopped: false },
     completed: [],
     pending: plan.alreadyCurrent
       ? []
       : [
           "update using this proposal digest",
-          ...(updateChangesNativeHooks(plan, inputs) ? ["restart Codex after current work completes"] : [])
+          ...(updateRequiresRestart(plan, inputs)
+            ? ["restart Codex after current work completes to reconnect MCP and refresh skills"]
+            : [])
         ]
   }
 }

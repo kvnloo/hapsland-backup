@@ -1,3 +1,4 @@
+import type { IntegrationSelection } from "../integration-selection.ts"
 import { Schema } from "effect"
 import { type JsonObject } from "./configuration-values.ts"
 
@@ -12,6 +13,7 @@ export class CodexInstallationError extends Schema.TaggedError<CodexInstallation
 export const RESULT_VERSION = 1 as const
 
 export interface InstallationRequest {
+  readonly integrations?: IntegrationSelection
   readonly codexHome?: string
   readonly proposalDigest?: string
   readonly codexExecutable?: string

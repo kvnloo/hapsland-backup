@@ -1,3 +1,4 @@
+import { extendMcpPlan, mcpOnlyPlan } from "../mcp.ts"
 import type { buildInputs } from "../runtime-inputs.ts"
 import { requireTargetPackageMetadata } from "../runtime-inputs.ts"
 import { readOwnership, type OwnershipRecord } from "../ownership.ts"
@@ -83,6 +84,7 @@ const updateRecordMutations = (
     : [mutation(ownership, nextOwnership, "record the target packaged runtime")]
 
 export const makeUpdatePlan = (request: InstallationRequest, inputs: ReturnType<typeof buildInputs>) => {
+  if (!inputs.integrations.hooks) return mcpOnlyPlan(request, inputs, "update")
   requireTargetPackageMetadata(inputs)
   const record = updateOwnership(inputs)
   const config = snapshot(inputs.paths.config)
@@ -124,25 +126,29 @@ export const makeUpdatePlan = (request: InstallationRequest, inputs: ReturnType<
     : encodeJson(
         makeOwnershipRecord(inputs, targetFingerprint, ownedFeature !== undefined || nextConfig !== config.content)
       )
-  const mutations = [
-    // Recording the target first retains the previous working hook if a later
-    // per-file write fails. The journal reports and safely resumes this exact state.
-    ...updateRecordMutations(
-      ownership,
-      hooks,
-      config,
-      nextOwnership,
-      nextHooks,
-      nextConfig,
-      equivalent,
-      bindingChanges
-    ),
-    ...(equivalent ? [] : bindingChanges),
-    ...(nextConfig === config.content ? [] : [mutation(config, nextConfig, "enable Codex's native hooks feature")]),
-    ...(nextHooks === hooks.content
-      ? []
-      : [mutation(hooks, nextHooks, "replace only the owned PostToolUse adapter hook")])
-  ]
+  const mutations = extendMcpPlan(
+    inputs,
+    [
+      // Recording the target first retains the previous working hook if a later
+      // per-file write fails. The journal reports and safely resumes this exact state.
+      ...updateRecordMutations(
+        ownership,
+        hooks,
+        config,
+        nextOwnership,
+        nextHooks,
+        nextConfig,
+        equivalent,
+        bindingChanges
+      ),
+      ...(equivalent ? [] : bindingChanges),
+      ...(nextConfig === config.content ? [] : [mutation(config, nextConfig, "enable Codex's native hooks feature")]),
+      ...(nextHooks === hooks.content
+        ? []
+        : [mutation(hooks, nextHooks, "replace only the owned PostToolUse adapter hook")])
+    ],
+    "update"
+  )
   return {
     inputs,
     record,

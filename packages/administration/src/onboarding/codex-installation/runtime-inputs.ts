@@ -1,3 +1,5 @@
+import { resolveIntegrationSelection } from "../integration-selection.ts"
+import { readOwnership } from "./ownership.ts"
 import { isCodexAgentRuntimeVersion } from "@hapsland/native-observation/direct-event/codex-version"
 import { statSync, accessSync, constants, realpathSync } from "node:fs"
 import { isNodeError } from "./file-snapshots.ts"
@@ -143,7 +145,13 @@ const runtimeCompatibility = (inputs: ReturnType<typeof buildInputs>) => {
 }
 
 export const compatibility = (inputs: ReturnType<typeof buildInputs>) => {
-  const codex = inputs.codex
+  const codex = inputs.integrations.hooks
+    ? inputs.codex
+    : {
+        ...inputs.codex,
+        supported: isCodexAgentRuntimeVersion(inputs.codex.version),
+        required: "Codex CLI with a stable semantic version and stdio MCP"
+      }
   const runtime = runtimeCompatibility(inputs)
   return { supported: codex.supported && runtime.supported, codex, runtime }
 }
@@ -174,7 +182,15 @@ export const buildInputs = (
   const executable = resolve(configured.executable)
   const entrypoint = resolvedEntrypoint(configured.entrypoint)
   const { codexVersions, ...metadata } = readPackageMetadata(packageRootFromEntrypoint(entrypoint))
+  const recorded = (() => {
+    try {
+      return readOwnership(pathsFor(home).ownership)
+    } catch {
+      return undefined
+    }
+  })()
   return {
+    integrations: resolveIntegrationSelection(request.integrations, recorded?.integrations),
     home,
     executable,
     entrypoint,

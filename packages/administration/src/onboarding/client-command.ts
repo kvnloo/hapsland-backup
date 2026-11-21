@@ -1,3 +1,4 @@
+import type { IntegrationSelection } from "./integration-selection.ts"
 import type { SetupClient } from "./client-selection.ts"
 import { SETUP_COMMAND, DEFAULT_UPDATE_CHANNEL } from "@hapsland/runtime-environment/runtime/cli-names"
 import { SUPPORTED_CLIENTS } from "@hapsland/runtime-environment/runtime/agent-clients"
@@ -68,15 +69,22 @@ const piProfile = (home: string | undefined, executable: string | undefined) => 
 export const profileFields = (host: SetupClient, flags: ReadonlyMap<string, string>) => {
   const home = flags.get(`--${host}-home`)
   const executable = flags.get(`--${host}-executable`)
+  const choice = flags.get("--integrations")
+  if (host === "pi" && choice !== undefined)
+    throw new Error("MCP plus skill selection is supported only for Codex and Claude Code")
+  const selected: { integrations?: IntegrationSelection } =
+    choice === undefined ? {} : { integrations: { hooks: choice !== "mcp", mcp: choice !== "hooks" } }
   if (host === "pi") return piProfile(home, executable)
   return host === "claude"
     ? {
         host,
+        ...selected,
         ...(home === undefined ? {} : { claudeHome: home }),
         ...(executable === undefined ? {} : { claudeExecutable: executable })
       }
     : {
         host,
+        ...selected,
         ...(home === undefined ? {} : { codexHome: home }),
         ...(executable === undefined ? {} : { codexExecutable: executable })
       }

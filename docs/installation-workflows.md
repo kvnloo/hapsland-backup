@@ -40,7 +40,11 @@ Standalone build targets are macOS arm64 and Linux arm64. Builds and offline
 checks do not establish current native client support; see the
 [compatibility evidence](installed-release-compatibility.md).
 
-Setup installs hooks for a **user profile across repositories**. Running it in a
+Setup installs selected integrations for a **user profile across repositories**.
+For Codex and Claude Code, `--integrations=hooks|mcp|both` chooses hooks,
+the bundled MCP server plus canonical companion skill, or both independently.
+A new profile defaults to hooks; omitting the choice later preserves its
+recorded selection. Pi retains its existing hook/extension integration. Running it in a
 repository does not limit installation to that repository. Before your first
 agent edit, choose what source can leave your machine. For example, create or
 merge this into `.hapsland.jsonc` at the repository root:
@@ -188,7 +192,7 @@ Setup rechecks credentials on every run: environment and file credentials take p
 
 Use `hapsland setup codex --new-key` (also available for Claude and Pi) to skip the existing-key lookup and request a replacement. This requires a terminal and a validated selected destination. It does not change environment/file/native lookup precedence. Automation may set `newKey: true` in its version-1 `--setup` JSON request.
 
-Setup previews the exact owned hooks, asks before installing them, offers masked credential entry when a saved key is missing, loads file settings, and reports offline readiness. Its installation and local checks make no Jev request; the optional key check runs only after separate confirmation. All three clients accept the version-1 JSON `--setup` interface; `--pilot --host=claude|codex|pi` invokes the same guided flow (bare `--pilot` opens the same client selector).
+Setup previews the exact selected owned integration changes, asks before installing them, offers masked credential entry when a saved key is missing, loads file settings, and reports offline readiness. Its installation and local checks make no Jev request; the optional key check runs only after separate confirmation. All three clients accept the version-1 JSON `--setup` interface; `--pilot --host=claude|codex|pi` invokes the same guided flow (bare `--pilot` opens the same client selector).
 
 The terminal explains that the key must come from TypeSafe, links to [the key dashboard](https://console.typesafe.ai/keys), and explains hidden input and the reviewed storage destination. It shows the selected environment variable, credential file path, or native store, with instructions to replace that source. `--new-key` selects a reviewed file/native save destination; setup reports the effective source independently.
 
@@ -246,6 +250,51 @@ Creating a custom rule also enables it, and its preview states that activation
 before interactive writes. Merely saving a rule file does not activate it.
 
 The selected profile is user-wide by default. File settings control repositories and files; invoking setup from a repository does not restrict the installed hooks to that repository. Use [configuration](configuration.md) to bound review scope. `--claude-home=PATH`, `--codex-home=PATH`, or `--pi-home=PATH` and the corresponding `--claude-executable=PATH`, `--codex-executable=PATH`, or `--pi-executable=PATH` select the registration and compatibility probe. An alternate registration home alone does not configure the client process to use that home.
+
+### Optional conversational rule authoring
+
+For Codex or Claude Code, install MCP plus its companion skill independently
+of hooks, or choose both:
+
+```sh
+hapsland setup codex --integrations=mcp
+hapsland setup claude --integrations=both
+```
+
+The same choice works with explicit unattended setup. For example, preview
+without writes or prompts:
+
+```sh
+hapsland setup codex --integrations=mcp --no-input --review disabled --credential skip --json
+```
+
+Use `--apply` separately to authorize the reviewed installation changes.
+Structured version-one `--setup`, `--install-preview` and `--install` requests
+accept `"integrations": { "hooks": false, "mcp": true }` for those hosts.
+At least one integration must be selected. Updates, repair and removal use the
+recorded selection when no new choice is supplied. An explicit changed
+selection appears in a fresh preview before it can remove or add owned
+resources.
+
+The server runs as `hapsland mcp` from the retained package; the host owns that
+stdio subprocess. Each tool call names an absolute repository explicitly and
+returns its resolved Git working-tree root. MCP registration and skill discovery
+are user-profile resources, not project-local configuration. The server does
+not remember a mutable current project. See the host-specific
+[Codex](codex-installation.md#optional-mcp-and-companion-skill) and
+[Claude Code](claude-installation.md) guidance for paths and constraints.
+
+Installation and inspection make no classifier requests. Rule checks retain
+the configured backend, privacy and spending authority; they can send selected
+source and incur charges. The companion skill requires useful unsaved-candidate
+observations and exact operator approval before applying a rule. An automatic
+transport response or tool permission does not provide that approval.
+
+Finish current work and restart the selected host after server or skill changes
+to reconnect MCP and refresh discovery. Update/removal preserve unrelated
+settings and report modified owned registrations or skill files as conflicts.
+Installed lifecycle mechanics, real human interaction and selected classifier
+behavior are separate evidence; a successful setup does not establish all three.
 
 ### Agent restart and hook permissions
 
@@ -532,7 +581,10 @@ Doctor distinguishes no registration from damaged ownership/configuration. Delet
 
 An interrupted Codex operation with a resumable journal resumes after approval. Explicit reinstall can replace an unusable journal, keeping a private backup next to it and building from current user files rather than restoring an old whole-file snapshot. The approval binds the current journal as well as configuration changes; later edits require another preview. If the active package is missing or its administrative record is damaged, reinstall falls back to the runnable package in PATH, reports that choice, and reestablishes the active record. Use `hapsland reinstall CLIENT --target=/absolute/healthy-prefix/bin/hapsland` to select another healthy package.
 
-Uninstall previews removal of Hapsland-owned hooks and its owned feature entry. Remove hooks **before** uninstalling any npm package they reference. An already missing owned hook is safe to remove; locally modified entries require explicit reinstall or manual reconciliation first. User settings, credentials, independent hooks and native trust are preserved. Unchecking a client in setup only skips that profile and does not uninstall it.
+Uninstall previews removal of the recorded Hapsland-owned integrations.
+For MCP this includes only its owned registration and unchanged companion
+skill; modified owned artifacts remain conflicts. Hook removal also includes
+its owned feature entry. Remove hooks **before** uninstalling any npm package they reference. An already missing owned hook is safe to remove; locally modified entries require explicit reinstall or manual reconciliation first. User settings, credentials, independent hooks and native trust are preserved. Unchecking a client in setup only skips that profile and does not uninstall it.
 
 To disable review without uninstalling, set user `excludes` to `["**/*"]`; see
 [edit-owned settings](review-contract-compatibility.md#edit-owned-settings) for

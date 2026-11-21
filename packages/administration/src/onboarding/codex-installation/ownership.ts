@@ -1,9 +1,19 @@
+import { IntegrationSelection } from "../integration-selection.ts"
 import { OWNED_MARKER } from "./hook-identity.ts"
 import { Schema } from "effect"
 import { snapshot } from "./file-snapshots.ts"
 import { isObject } from "./configuration-values.ts"
 
+export const McpOwnership = Schema.Struct({
+  command: Schema.String,
+  args: Schema.Array(Schema.String),
+  skillDigest: Schema.String
+})
+export type McpOwnership = typeof McpOwnership.Type
+
 export interface OwnershipRecord {
+  readonly integrations?: IntegrationSelection
+  readonly mcp?: McpOwnership
   readonly version: 1
   readonly adapter: "codex"
   readonly codexHome: string
@@ -34,6 +44,8 @@ const ComposedFingerprints = Schema.Struct({
 })
 
 const OwnershipRecordShape = Schema.Struct({
+  integrations: Schema.optionalKey(IntegrationSelection),
+  mcp: Schema.optionalKey(McpOwnership),
   version: Schema.Literal(1),
   adapter: Schema.Literal("codex"),
   codexHome: Schema.String,
@@ -71,12 +83,10 @@ const decodeOwnedEntry = (value: unknown) => {
   }
 }
 
-export const readOwnership = (path: string): OwnershipRecord | undefined => {
-  const file = snapshot(path)
-  if (!file.exists) return undefined
+export const decodeOwnershipContent = (content: string): OwnershipRecord => {
   let parsed: unknown
   try {
-    parsed = JSON.parse(file.content)
+    parsed = JSON.parse(content)
   } catch {
     throw new Error("installation ownership record is malformed")
   }
@@ -84,6 +94,8 @@ export const readOwnership = (path: string): OwnershipRecord | undefined => {
   return {
     version: 1,
     adapter: "codex",
+    ...(value.integrations === undefined ? {} : { integrations: value.integrations }),
+    ...(value.mcp === undefined ? {} : { mcp: value.mcp }),
     codexHome: value.codexHome,
     runtimeVersion: value.runtimeVersion,
     packageVersion: value.packageVersion,
@@ -108,6 +120,11 @@ export const readOwnership = (path: string): OwnershipRecord | undefined => {
         }),
     owned: value.owned.map(decodeOwnedEntry)
   }
+}
+
+export const readOwnership = (path: string): OwnershipRecord | undefined => {
+  const file = snapshot(path)
+  return file.exists ? decodeOwnershipContent(file.content) : undefined
 }
 
 export const OWNERSHIP_VERSION = 1 as const
