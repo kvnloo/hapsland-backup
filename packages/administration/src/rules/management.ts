@@ -399,7 +399,9 @@ const applyExactRuleChangesUnlocked = Effect.fn("Rules.applyExactChangesUnlocked
     try: () => {
       for (const file of plan.files) {
         mkdirSync(dirname(file.path), { recursive: true, mode: 0o700 })
-        writeFileSync(file.path, file.after, { encoding: "utf8", flag: "wx", mode: 0o600 })
+        if (file.action === "create")
+          writeFileSync(file.path, file.after, { encoding: "utf8", flag: "wx", mode: 0o600 })
+        else atomicInstallationFile(file.path, file.after)
         completed.add(file.path)
       }
       for (const configuration of plan.configurations) {
@@ -437,6 +439,22 @@ const applyExactRuleChangesUnlocked = Effect.fn("Rules.applyExactChangesUnlocked
     write: completed.has(configuration.path) ? ("completed" as const) : ("incomplete" as const),
     observed: observeContent(configuration.path, configuration.after)
   }))
+  const rules = plan.affectedRules.map((effect) => {
+    const actual =
+      inventory._tag === "Success" ? inventory.success.rules.find((rule) => rule.id === effect.id) : undefined
+    return {
+      id: effect.id,
+      expectedEnabled: effect.after?.enabled,
+      activation:
+        inventory._tag === "Failure"
+          ? ("unknown" as const)
+          : actual === undefined
+            ? ("not-connected" as const)
+            : actual.enabled
+              ? ("enabled" as const)
+              : ("disabled" as const)
+    }
+  })
   const observed =
     inventory._tag === "Success" &&
     files.every(
@@ -444,7 +462,8 @@ const applyExactRuleChangesUnlocked = Effect.fn("Rules.applyExactChangesUnlocked
         file.saved === "exact" &&
         file.activation === (plan.rules.find((rule) => rule.id === file.id)?.enabled ? "enabled" : "disabled")
     ) &&
-    configurations.every((configuration) => configuration.observed === "exact")
+    configurations.every((configuration) => configuration.observed === "exact") &&
+    rules.every((rule) => rule.activation === (rule.expectedEnabled ? "enabled" : "disabled"))
   return {
     version: 1 as const,
     operation: "rule-apply" as const,
@@ -458,6 +477,7 @@ const applyExactRuleChangesUnlocked = Effect.fn("Rules.applyExactChangesUnlocked
           : ("failed" as const),
     files,
     configurations,
+    rules,
     ...(written._tag === "Failure"
       ? { reason: written.failure }
       : observed
