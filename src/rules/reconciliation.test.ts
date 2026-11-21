@@ -242,6 +242,30 @@ it("creates an explicitly scoped Personal rule only at its authorized profile de
   expect(await readFile(join(root, ".hapsland.jsonc"), "utf8")).toBe(before)
 })
 
+it("previews a Personal create beside a missing filesystem-root user configuration without writing", async () => {
+  const root = await makeGitFixture()
+  roots.push(root)
+  const user = "/hapsland-qualification-user.json"
+  const destination = "/rules/custom/personal%2Froot-preview.jsonc"
+  await expect(stat(user)).rejects.toMatchObject({ code: "ENOENT" })
+  await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" })
+  const changes: Changes = [
+    {
+      action: "create",
+      scope: "personal",
+      path: destination,
+      content: body("personal/root-preview", "Does an admitted empty input lack an explicit result?"),
+      settings: { enabled: true }
+    }
+  ]
+  const proposed = await preview(root, user, changes)
+  expect(proposed.files).toMatchObject([{ path: destination, before: undefined }])
+  expect(proposed.configurations).toMatchObject([{ path: user, before: undefined }])
+  await expect(stat(user)).rejects.toMatchObject({ code: "ENOENT" })
+  await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" })
+  await expect(stat(join(root, ".hapsland.jsonc"))).rejects.toMatchObject({ code: "ENOENT" })
+})
+
 it("shows explicit Personal replacement and local Project effects together while preserving other-project activation", async () => {
   const { root, profile, user } = await fixture()
   const other = await makeGitFixture()

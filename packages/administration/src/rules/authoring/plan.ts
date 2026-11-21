@@ -1,7 +1,8 @@
+import { canonicalDestination } from "../canonical-destination.ts"
 import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
 import { createHash } from "node:crypto"
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs"
+import { existsSync, lstatSync, readFileSync } from "node:fs"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { discoverPhysicalWorkingTreeRoot } from "@hapsland/native-observation/repository/root"
 import type { PhysicalRootIdentity } from "@hapsland/native-observation/direct-event/observation"
@@ -19,12 +20,6 @@ import { settingsSource, type ReviewSettingsSnapshot } from "@hapsland/review-de
 import { RuleChanges, type RuleScope } from "./contract.ts"
 
 const optionalText = (path: string): string | undefined => (existsSync(path) ? readFileSync(path, "utf8") : undefined)
-const canonicalDestination = (path: string): string => {
-  if (existsSync(path)) return realpathSync(path)
-  const parent = dirname(path)
-  return parent === path ? path : join(canonicalDestination(parent), path.slice(parent.length + 1))
-}
-
 export interface RuleChangesPlan {
   readonly version: 1
   readonly repository: string

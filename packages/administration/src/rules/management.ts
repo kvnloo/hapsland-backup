@@ -1,3 +1,4 @@
+import { canonicalDestination } from "./canonical-destination.ts"
 import type { RuleChanges } from "./authoring/contract.ts"
 import { previewRuleChanges } from "./authoring/plan.ts"
 import { loadRuleInventory } from "./inventory.ts"
@@ -29,12 +30,6 @@ export type RuleChange =
   | { readonly action: "enable" | "disable"; readonly scope: RuleScope; readonly id: string }
 
 const optionalText = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : undefined)
-const canonicalDestination = (path: string): string => {
-  if (existsSync(path)) return realpathSync(path)
-  const parent = dirname(path)
-  if (parent === path) return path
-  return join(canonicalDestination(parent), path.slice(parent.length + (parent.endsWith("/") ? 0 : 1)))
-}
 const contained = (root: string, path: string): boolean => {
   const offset = relative(realpathSync(root), canonicalDestination(path))
   return offset !== ".." && !offset.startsWith("../") && !isAbsolute(offset)
