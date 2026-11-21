@@ -18,6 +18,7 @@
 | Configure file access, context, and privacy | [Configuration](configuration.md) |
 | Set up credentials or a review backend | [Credentials and login](installation-workflows.md#credentials-and-login) and [review providers](review-providers.md) |
 | Inspect, manage, and test existing rules | [Rules](rules.md) |
+| Capture a reusable operator correction as a rule | [Conversational authoring](rules.md#capture-a-correction-in-conversation) |
 | Write your first custom rule | [First-rule walkthrough](write-first-rule.md); use an installed CLI |
 | Diagnose readiness or inspect agent reviews | [Doctor, dashboard, status, and analytics](status.md) |
 | Understand saturation and review budgets | [Review resources and limits](review-resources.md) |

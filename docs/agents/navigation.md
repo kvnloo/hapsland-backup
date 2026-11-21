@@ -91,6 +91,16 @@ The simulator's [interface](../../packages/agent-flow-viz/src/simulation/index.t
 Projection, simulation, replay, live-draft and resource browser checks in the visualization package verify these surfaces;
 they establish synthetic replay behavior, not native runtime execution.
 
+For conversational rule authoring, the [accepted implementation scope](https://github.com/dearlordylord/hapsland/issues/297)
+owns the behavior. [Rule guidance](../rules.md#capture-a-correction-in-conversation)
+describes the operator workflow. Start in [MCP operations](../../packages/administration/src/rules/mcp/operations.ts),
+[authoring plans](../../packages/administration/src/rules/authoring/plan.ts), and
+[declaration checks](../../packages/administration/src/rules/check.ts).
+The matching [candidate](../../src/rules/candidate.test.ts) and
+[stdio](../../src/rules/mcp.test.ts) fixtures establish deterministic operation
+behavior. Installed lifecycle, actual human approval, and classifier usefulness
+require their separate evidence boundaries.
+
 ## Analyze package impact
 
 Use [the package-impact CLI](../../scripts/package-impact.mjs) to map a Git diff

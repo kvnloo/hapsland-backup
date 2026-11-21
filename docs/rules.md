@@ -1,6 +1,6 @@
 # Rules
 
-**Purpose:** Explain editable rules, their input requirements, management commands, and direct rule checks.
+**Purpose:** Explain editable rules, conversational authoring, input requirements, management commands, and direct rule checks.
 **Audience:** End users inspecting and managing rules; rule authors.
 **Status:** Active maintained rule reference.
 **Authority:** Maintained user guidance for the accepted [rule and configuration contract](review-contract-compatibility.md) and [direct-review contract](type-function-review-proposal.md); generated tables describe current schemas and commands.
@@ -124,6 +124,68 @@ hapsland rules connect --path .hapsland/rules/custom/no-primitive-obsession.json
 ```
 
 <!-- authoring-connect:end -->
+
+## Capture a correction in conversation
+
+The companion [hapsland-rule-authoring skill](../skills/hapsland-rule-authoring/SKILL.md) helps an agent turn a reusable
+operator correction into a rule. Project is the default scope. Personal changes
+require an explicit choice because they can affect other repositories.
+Automatic advice uses existing enabled rules and never starts rule capture.
+
+The agent inspects existing requirements before drafting. A covering rule can
+be reused. A proposal that reconciles overlapping rules preserves their unrelated
+requirements and exceptions. A Project alternative to a Personal rule has a
+distinct identity and shows any local disabling of the inherited rule.
+
+Before saving, the agent shows the complete proposal and its effects. The
+proposal includes content, destinations, scope, connections, selection, and
+activation. **Save**, **Revise**, and **Skip** refer to that exact proposal.
+Permission to edit task code or run a tool does not approve a rule save.
+Changed content or effects require renewed validation and approval.
+
+Candidate checks leave active rules and durable configuration unchanged. The
+agent states expected judgments before dispatch, then compares them with the
+observed probabilities, thresholds, judgments, and omissions. An expected finding
+can validate a revealing example. A mismatch, skip, unavailable check, failure,
+or stale result blocks activation. Supported declarations with missing evidence
+produce explained skips. Obligations outside declaration review, such as requiring
+documentation for every API change, cannot be saved with an enforcement claim.
+
+After application, saved content, effective activation, and check outcomes are
+reported separately. The agent checks relevant task declarations with the stored
+rules, triages findings, repairs confirmed violations within the authorized task,
+and rechecks. A partial write requires inspection before repair and a fresh
+preview before another application. Hapsland does not promise automatic restoration.
+
+### MCP operations
+
+`hapsland mcp` runs the foreground stdio server. The host owns its process.
+Every tool call names an absolute `repository`; results identify its resolved
+physical Git root. Declaration targets use repository-relative paths and positive
+one-based lines. One server can serve different explicitly selected repositories.
+
+| Tool | Operations and results |
+| --- | --- |
+| `derive_rule` | `inspect` returns current definitions and selection. `preview` validates complete proposed changes and returns their effects and digest. Neither operation writes or calls the classifier. `apply` recomputes the identical proposal under the existing mutation locks before writes. |
+| `check_rules` | `stored` checks eligible enabled rules. `candidate` checks the previewed effective proposal without saving. A request supplies at most 20 path-and-line targets. |
+
+The advertised tool schemas define executable inputs. A preview digest establishes
+freshness, not human consent. After restart or a lost proposal, inspect current
+state, reconstruct the preview, and obtain fresh approval. If the host cannot
+obtain the operator's actual choice, the proposal stays pending.
+
+Checks retain normal privacy, source selection, evidence, credentials, backend,
+and resource policy. Candidate settings cannot expand those permissions.
+Checks can send selected source to the configured remote classifier and incur
+charges. The agent explains scope and backend before paid checks and preserves
+existing spending authority. Source-bearing tool results stay private.
+`classifierCalls` counts logical classifier dispatches. Transport retries and
+billed usage can differ from that count.
+Observed examples establish those cases, not general classifier correctness.
+
+The [accepted authoring scope](https://github.com/dearlordylord/hapsland/issues/297)
+defines these obligations. Installed-host and classifier evidence retain their
+own limits in the [compatibility guide](installed-release-compatibility.md).
 
 ## Try a rule on a file and line
 
