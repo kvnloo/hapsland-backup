@@ -1,8 +1,23 @@
 import { BUN_VERSION, bunExecutable } from "@hapsland/runtime-environment/runtime/bun-runtime"
+import {
+  emittedReleaseEntrypoints,
+  packageAssetPath,
+  packageRootFromEntrypoint
+} from "@hapsland/runtime-environment/runtime/package-runtime"
+import { createInstallationPackageFixture } from "@hapsland/build-tooling/test-support/installation-package"
 import { ConfigProvider, Effect } from "effect"
 import { createHash } from "node:crypto"
 import { canonicalJson } from "@hapsland/administration/onboarding/hook-reconciliation"
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
@@ -44,6 +59,20 @@ const fixture = (version = "2.1.218") => {
   return { root, home, claudeExecutable }
 }
 
+const mcpFixture = () => {
+  const selected = fixture("2.1.330")
+  const entrypoint = createInstallationPackageFixture(selected.root)
+  const targetRoot = packageRootFromEntrypoint(entrypoint)
+  const cli = join(targetRoot, emittedReleaseEntrypoints.cli)
+  mkdirSync(join(cli, ".."), { recursive: true })
+  writeFileSync(cli, "process.stdin.resume();\n")
+  const skill = join(targetRoot, "skills", "hapsland-rule-authoring", "SKILL.md")
+  mkdirSync(join(skill, ".."), { recursive: true })
+  writeFileSync(skill, readFileSync(packageAssetPath("skills", "hapsland-rule-authoring", "SKILL.md"), "utf8"))
+  process.env.REVIEW_INSTALL_ENTRYPOINT = entrypoint
+  return { ...selected, entrypoint, targetRoot, cli, skill }
+}
+
 const settings = (home: string) =>
   JSON.parse(readFileSync(join(home, "settings.json"), "utf8")) as Record<string, unknown>
 const digestOf = (preview: object) => {
@@ -53,6 +82,255 @@ const digestOf = (preview: object) => {
 }
 
 describe("Claude installation lifecycle", () => {
+  it("binds MCP command and canonical skill to the same explicitly selected package as hooks", async () => {
+    const { home, claudeExecutable, cli, skill } = mcpFixture()
+    const targetSkill = `${readFileSync(skill, "utf8")}\n<!-- selected retained target -->\n`
+    writeFileSync(skill, targetSkill)
+    const request = { claudeHome: home, claudeExecutable, integrations: { hooks: false, mcp: true } }
+    const preview = await runPreview(previewClaudeInstallation(request))
+    expect(
+      await runInstallation(installClaudeIntegration({ ...request, proposalDigest: digestOf(preview) }))
+    ).toMatchObject({ status: "complete" })
+    const installed = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.hapsland
+    expect(installed).toMatchObject({ command: bunExecutable(), args: [cli, "mcp"] })
+    expect(readFileSync(join(home, "skills", "hapsland-rule-authoring", "SKILL.md"), "utf8")).toBe(targetSkill)
+  })
+
+  it("removes owned MCP artifacts when the selected target assets are missing", async () => {
+    const { home, claudeExecutable, cli, skill } = mcpFixture()
+    const request = { claudeHome: home, claudeExecutable, integrations: { hooks: false, mcp: true } }
+    const initial = await runPreview(previewClaudeInstallation(request))
+    await runInstallation(installClaudeIntegration({ ...request, proposalDigest: digestOf(initial) }))
+    rmSync(cli)
+    rmSync(skill)
+    const removal = await runInstallation(uninstallClaudeIntegration(request))
+    expect(
+      await runInstallation(uninstallClaudeIntegration({ ...request, proposalDigest: digestOf(removal) }))
+    ).toMatchObject({ status: "complete" })
+    expect(existsSync(join(home, "skills", "hapsland-rule-authoring", "SKILL.md"))).toBe(false)
+    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"))).toEqual({})
+  })
+
+  it.each(["entry", "skill"])("preserves an unowned Hapsland-named %s instead of adopting it", async (artifact) => {
+    const { home, claudeExecutable } = mcpFixture()
+    const path =
+      artifact === "entry" ? join(home, ".claude.json") : join(home, "skills", "hapsland-rule-authoring", "SKILL.md")
+    mkdirSync(join(path, ".."), { recursive: true })
+    const content =
+      artifact === "entry"
+        ? JSON.stringify({ mcpServers: { hapsland: { type: "stdio", command: "operator-server", args: [] } } })
+        : "operator-owned skill\n"
+    writeFileSync(path, content)
+    expect(
+      await runPreview(
+        previewClaudeInstallation({ claudeHome: home, claudeExecutable, integrations: { hooks: false, mcp: true } })
+      )
+    ).toMatchObject({ status: "conflict" })
+    expect(readFileSync(path, "utf8")).toBe(content)
+    expect(existsSync(join(home, ".hapsland", "claude-installation-v1.json"))).toBe(false)
+  })
+
+  it("installs MCP and its canonical skill without adding hooks", async () => {
+    const { home, claudeExecutable } = mcpFixture()
+    const request = { claudeHome: home, claudeExecutable, integrations: { hooks: false, mcp: true } }
+    const preview = await runPreview(previewClaudeInstallation(request))
+    expect(preview.status).toBe("preview")
+    expect(existsSync(join(home, ".claude.json"))).toBe(false)
+    expect(
+      await runInstallation(installClaudeIntegration({ ...request, proposalDigest: digestOf(preview) }))
+    ).toMatchObject({ status: "complete", restart: { required: true } })
+    expect(existsSync(join(home, "settings.json"))).toBe(false)
+    const registration = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"))
+    expect(registration.mcpServers.hapsland).toMatchObject({ type: "stdio", args: expect.arrayContaining(["mcp"]) })
+    expect(readFileSync(join(home, "skills", "hapsland-rule-authoring", "SKILL.md"), "utf8")).toBe(
+      readFileSync(packageAssetPath("skills", "hapsland-rule-authoring", "SKILL.md"), "utf8")
+    )
+    expect(await runInstallation(inspectClaudeInstallation(request))).toMatchObject({ installed: true })
+  })
+
+  it("targets the Claude profile selected by the caller configuration", async () => {
+    const { home, claudeExecutable, entrypoint } = mcpFixture()
+    const preview = await Effect.runPromise(
+      previewClaudeInstallation({ claudeExecutable, integrations: { hooks: false, mcp: true } }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              CLAUDE_CONFIG_DIR: home,
+              REVIEW_INSTALL_RUNTIME: bunExecutable(),
+              REVIEW_INSTALL_ENTRYPOINT: entrypoint
+            })
+          )
+        )
+      )
+    )
+    expect(preview).toMatchObject({ status: "preview", host: { home } })
+    expect("proposal" in preview && preview.proposal.changes.map((change) => change.path)).toContain(
+      join(home, ".claude.json")
+    )
+  })
+
+  it.skipIf(process.platform === "win32")(
+    "refuses a substituted skill directory before planning profile writes",
+    async () => {
+      const { root, home, claudeExecutable } = mcpFixture()
+      const foreign = join(root, "foreign-skills")
+      mkdirSync(foreign)
+      symlinkSync(foreign, join(home, "skills"), "dir")
+      const preview = await runPreview(
+        previewClaudeInstallation({ claudeHome: home, claudeExecutable, integrations: { hooks: false, mcp: true } })
+      )
+      expect(preview).toMatchObject({
+        status: "conflict",
+        error: { message: expect.stringMatching(/skill.*directory/i) }
+      })
+      expect(existsSync(join(foreign, "hapsland-rule-authoring"))).toBe(false)
+      expect(existsSync(join(home, ".hapsland"))).toBe(false)
+    }
+  )
+
+  it("preserves unrelated profile state across MCP update, missing-file repair and removal", async () => {
+    const { home, claudeExecutable } = mcpFixture()
+    const hookSettings = JSON.stringify({
+      permissions: { allow: ["Read"] },
+      hooks: { Stop: [{ hooks: [{ type: "command", command: "other-hook" }] }] }
+    })
+    const unrelated = {
+      migrationMarker: "retained",
+      mcpServers: { other: { type: "stdio", command: "other-server", args: [] } }
+    }
+    const mcpPath = join(home, ".claude.json")
+    const skillPath = join(home, "skills", "hapsland-rule-authoring", "SKILL.md")
+    writeFileSync(join(home, "settings.json"), hookSettings)
+    writeFileSync(mcpPath, JSON.stringify(unrelated))
+    const request = { claudeHome: home, claudeExecutable }
+    const installation = { ...request, integrations: { hooks: false, mcp: true } }
+    const initial = await runPreview(previewClaudeInstallation(installation))
+    expect(
+      await runInstallation(installClaudeIntegration({ ...installation, proposalDigest: digestOf(initial) }))
+    ).toMatchObject({ status: "complete" })
+    expect(readFileSync(join(home, "settings.json"), "utf8")).toBe(hookSettings)
+    expect(await runPreview(previewClaudeUpdate(request))).toMatchObject({
+      alreadyCurrent: true,
+      integrations: { hooks: false, mcp: true },
+      proposal: { changes: [] }
+    })
+
+    rmSync(skillPath)
+    writeFileSync(mcpPath, JSON.stringify(unrelated))
+    expect(await runInstallation(inspectClaudeInstallation(request))).toMatchObject({ status: "conflict" })
+    const repair = await runPreview(previewClaudeUpdate(request))
+    expect(
+      await runInstallation(updateClaudeIntegration({ ...request, proposalDigest: digestOf(repair) }))
+    ).toMatchObject({ status: "complete" })
+    expect(await runInstallation(inspectClaudeInstallation(request))).toMatchObject({
+      status: "ready",
+      installed: true
+    })
+    expect(JSON.parse(readFileSync(mcpPath, "utf8"))).toMatchObject(unrelated)
+
+    const removal = await runInstallation(uninstallClaudeIntegration(request))
+    expect(
+      await runInstallation(uninstallClaudeIntegration({ ...request, proposalDigest: digestOf(removal) }))
+    ).toMatchObject({ status: "complete" })
+    expect(JSON.parse(readFileSync(mcpPath, "utf8"))).toEqual(unrelated)
+    expect(readFileSync(join(home, "settings.json"), "utf8")).toBe(hookSettings)
+    expect(existsSync(skillPath)).toBe(false)
+    expect(existsSync(join(home, ".hapsland", "claude-installation-v1.json"))).toBe(false)
+  })
+
+  it.each(["skill", "entry"])(
+    "preserves a locally modified owned MCP %s during update and removal",
+    async (artifact) => {
+      const { home, claudeExecutable } = mcpFixture()
+      const request = { claudeHome: home, claudeExecutable, integrations: { hooks: false, mcp: true } }
+      const initial = await runPreview(previewClaudeInstallation(request))
+      await runInstallation(installClaudeIntegration({ ...request, proposalDigest: digestOf(initial) }))
+      const mcpPath = join(home, ".claude.json")
+      const skillPath = join(home, "skills", "hapsland-rule-authoring", "SKILL.md")
+      if (artifact === "skill") writeFileSync(skillPath, "operator-edited skill\n")
+      else {
+        const configuration = JSON.parse(readFileSync(mcpPath, "utf8"))
+        configuration.mcpServers.hapsland.args.push("operator-change")
+        writeFileSync(mcpPath, JSON.stringify(configuration))
+      }
+      const before = [mcpPath, skillPath].map((path) => readFileSync(path, "utf8"))
+      expect(await runPreview(previewClaudeUpdate(request))).toMatchObject({ status: "conflict" })
+      expect(await runInstallation(uninstallClaudeIntegration(request))).toMatchObject({ status: "conflict" })
+      expect([mcpPath, skillPath].map((path) => readFileSync(path, "utf8"))).toEqual(before)
+      expect(await runPreview(previewClaudeInstallation({ ...request, reinstall: true }))).toMatchObject({
+        status: "conflict"
+      })
+    }
+  )
+
+  it("changes explicit integration selection while preserving unrelated hooks", async () => {
+    const { home, claudeExecutable } = mcpFixture()
+    const unrelated = { hooks: { Stop: [{ hooks: [{ type: "command", command: "other-hook" }] }] } }
+    writeFileSync(join(home, "settings.json"), JSON.stringify(unrelated))
+    const request = { claudeHome: home, claudeExecutable }
+    const both = { ...request, integrations: { hooks: true, mcp: true } }
+    const initial = await runPreview(previewClaudeInstallation(both))
+    await runInstallation(installClaudeIntegration({ ...both, proposalDigest: digestOf(initial) }))
+    expect(JSON.stringify(settings(home))).toContain("--review-tool-owned=claude-v1")
+    const mcpOnly = { ...request, integrations: { hooks: false, mcp: true } }
+    const first = await runPreview(previewClaudeUpdate(mcpOnly))
+    expect(
+      await runInstallation(updateClaudeIntegration({ ...mcpOnly, proposalDigest: digestOf(first) }))
+    ).toMatchObject({ status: "complete" })
+    expect(settings(home)).toEqual(unrelated)
+    expect(await runInstallation(inspectClaudeInstallation(request))).toMatchObject({
+      installed: true,
+      integrations: mcpOnly.integrations
+    })
+    const hooksOnly = { ...request, integrations: { hooks: true, mcp: false } }
+    const second = await runPreview(previewClaudeUpdate(hooksOnly))
+    expect(
+      await runInstallation(updateClaudeIntegration({ ...hooksOnly, proposalDigest: digestOf(second) }))
+    ).toMatchObject({ status: "complete" })
+    expect(JSON.stringify(settings(home))).toContain("other-hook")
+    expect(JSON.stringify(settings(home))).toContain("--review-tool-owned=claude-v1")
+    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"))).toEqual({})
+    expect(existsSync(join(home, "skills", "hapsland-rule-authoring", "SKILL.md"))).toBe(false)
+  })
+
+  it("rejects a preview after unrelated MCP configuration changes without writing owned artifacts", async () => {
+    const { home, claudeExecutable } = mcpFixture()
+    const request = { claudeHome: home, claudeExecutable, integrations: { hooks: false, mcp: true } }
+    const preview = await runPreview(previewClaudeInstallation(request))
+    const changed = JSON.stringify({ deviceMetadata: "changed after preview" })
+    writeFileSync(join(home, ".claude.json"), changed)
+    expect(
+      await runInstallation(installClaudeIntegration({ ...request, proposalDigest: digestOf(preview) }))
+    ).toMatchObject({ status: "proposal-mismatch" })
+    expect(readFileSync(join(home, ".claude.json"), "utf8")).toBe(changed)
+    expect(existsSync(join(home, "skills", "hapsland-rule-authoring", "SKILL.md"))).toBe(false)
+    expect(existsSync(join(home, ".hapsland", "claude-installation-v1.json"))).toBe(false)
+  })
+
+  it("inspects an owned retained registration separately from an available MCP update", async () => {
+    const { home, claudeExecutable } = mcpFixture()
+    const request = { claudeHome: home, claudeExecutable, integrations: { hooks: false, mcp: true } }
+    const initial = await runPreview(previewClaudeInstallation(request))
+    await runInstallation(installClaudeIntegration({ ...request, proposalDigest: digestOf(initial) }))
+    const retained = { type: "stdio", command: "/bin/cat", args: [], env: {} }
+    const configurationPath = join(home, ".claude.json")
+    const recordPath = join(home, ".hapsland", "claude-installation-v1.json")
+    const configuration = JSON.parse(readFileSync(configurationPath, "utf8"))
+    configuration.mcpServers.hapsland = retained
+    writeFileSync(configurationPath, JSON.stringify(configuration))
+    const record = JSON.parse(readFileSync(recordPath, "utf8"))
+    record.mcp.entry = retained
+    writeFileSync(recordPath, JSON.stringify(record))
+    expect(await runInstallation(inspectClaudeInstallation(request))).toMatchObject({
+      status: "ready",
+      installed: true
+    })
+    const update = await runPreview(previewClaudeUpdate(request))
+    expect(update).toMatchObject({ status: "preview", alreadyCurrent: false })
+    expect("proposal" in update && update.proposal.changes.map((change) => change.path)).toContain(configurationPath)
+    expect(JSON.parse(readFileSync(configurationPath, "utf8")).mcpServers.hapsland).toEqual(retained)
+  })
+
   it.each(["REVIEW_INSTALL_RUNTIME", "REVIEW_INSTALL_ENTRYPOINT"])(
     "rejects empty %s before installation writes",
     async (key) => {

@@ -1,7 +1,7 @@
 # Set up Hapsland for Claude Code
 
-**Purpose:** Explain Claude Code registration, setup, updates, and removal.
-**Audience:** End users of the named agent runtime; contributors maintaining its integration.
+**Purpose:** Explain Claude Code hooks, conversational rule authoring, registration, updates, and removal.
+**Audience:** End users of Claude Code; rule authors; contributors maintaining its integration.
 **Status:** Maintained installation guidance.
 **Authority:** Operational guidance for implemented lifecycle operations; exact compatibility claims are limited to the evidence cited below.
 **Expected use:** Install, update, troubleshoot, or remove the Claude Code integration.
@@ -15,7 +15,7 @@ Start with a verified package from the [installation guide](installation-workflo
 hapsland setup claude
 ```
 
-Setup shows the hooks it will add and asks before installing them. If you need a
+Setup previews the selected integration and asks before installing it. If you need a
 Jev key, you can enter it without displaying it in the terminal. Setup also
 offers to check the key with a built-in greeting that contains no project code;
 it asks before sending the request.
@@ -56,7 +56,7 @@ Choose a recovery or removal command based on the problem:
 
 | Command | Action |
 | --- | --- |
-| `hapsland repair claude` | Restore missing hooks. |
+| `hapsland repair claude` | Restore missing owned hooks, MCP registration, and the companion skill. |
 | `hapsland reinstall claude` | Replace damaged marked Hapsland handlers while preserving user settings and credentials. |
 | `hapsland uninstall claude` | Preview and remove this integration. |
 
@@ -64,11 +64,58 @@ See [recovery and removal](installation-workflows.md#disablement-removal-and-rec
 for conflicting hooks or interrupted operations. Without an agent name, these
 commands apply to all registered Claude Code and Codex CLI installations.
 
+## Optional MCP and rule authoring
+
+Install the MCP server and companion skill without hooks:
+
+```sh
+hapsland setup claude --integrations=mcp
+```
+
+Use `--integrations=hooks` for hooks or `--integrations=both` for both choices.
+Without this flag, a new profile defaults to hooks. An existing profile keeps
+its recorded selection during setup, update, and repair. An explicit selection
+change appears in the preview before application.
+
+Use `--claude-home=/absolute/profile` to select a custom user profile.
+`CLAUDE_CONFIG_DIR` also selects a custom profile when an explicit home is absent.
+Hapsland uses these profile locations:
+
+| Profile | MCP registration | Companion skill |
+| --- | --- | --- |
+| Default | `~/.claude.json` | `~/.claude/skills/hapsland-rule-authoring/SKILL.md` |
+| Custom `PROFILE` | `PROFILE/.claude.json` | `PROFILE/skills/hapsland-rule-authoring/SKILL.md` |
+
+Hook settings remain in the selected profile's `settings.json`. MCP-only
+installation adds no hooks. Hapsland preserves unrelated hooks, MCP servers, and Claude
+metadata. Modified owned entries or skill files produce a conflict during
+update and removal, including reinstall. Inspect those files before repair.
+
+The retained Hapsland release runs the stdio server with `hapsland mcp`.
+Its two tools are `derive_rule` and `check_rules`. Every request supplies an
+absolute repository path, and every result identifies that repository.
+
+The companion skill turns reusable operator corrections into complete rule
+proposals. It inspects existing rules, checks unsaved candidates, and offers
+Save, Revise, or Skip for the exact final content and effects. Automatic advice
+continues to use existing rules. See [Rules](rules.md) for evidence and review
+boundaries. Tool permission or an automatic transport response does not replace
+your approval to save a rule.
+
+Restart Claude Code after registration or skill changes. To reconnect an
+existing server, use Claude Code's `/mcp` menu. Print mode needs a new invocation.
+The installation result reports whether registration or skill changes require
+reconnection.
+
 ## Compatibility and review behavior
 
 Setup accepts stable Claude Code releases without a fixed version list. This
 check lets installation proceed; it does not guarantee that every release works
 with Hapsland.
+
+User-profile MCP registration locations were observed with Claude Code 2.1.330.
+Full rule-authoring conversation and human-approval qualification is tracked
+separately in [#304](https://github.com/dearlordylord/hapsland/issues/304).
 
 Automated trials have observed Claude Code receiving review findings and
 repairing code, including a run with live Jev. Interactive sessions and how
@@ -109,6 +156,11 @@ unrelated hooks.
 This section is for scripts that need the JSON interface instead of guided setup.
 
 The versioned JSON operations use `host: "claude"`, `claudeHome` (default `~/.claude`), and optionally `claudeExecutable` (default `claude`). Preview is read-only and returns `proposal.digest`. Apply that digest to install or update. The first uninstall call is also a preview; pass its digest to remove the owned entry.
+
+The optional `integrations` field selects `{ "hooks": false, "mcp": true }`,
+`{ "hooks": true, "mcp": false }`, or `{ "hooks": true, "mcp": true }`.
+MCP includes the canonical companion skill. Omit this field on updates to keep
+the recorded selection.
 
 ```sh
 printf '%s\n' '{"version":1,"operation":"install-preview","host":"claude"}' | hapsland --install-preview

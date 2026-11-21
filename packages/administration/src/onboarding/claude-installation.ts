@@ -10,7 +10,7 @@ import {
   expectedRuntimeVersion
 } from "@hapsland/runtime-environment/runtime/package-runtime"
 import { isClaudeAgentRuntimeVersion } from "@hapsland/native-observation/direct-event/observation"
-import { Config, Effect, Schema } from "effect"
+import { Config, Effect, Option, Schema } from "effect"
 import { execFileClosedStdin } from "@hapsland/runtime-environment/process/closed-stdin"
 import { createHash } from "node:crypto"
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs"
@@ -19,6 +19,13 @@ import { join, resolve } from "node:path"
 import { atomicInstallationFile } from "./atomic-installation-file.ts"
 
 import { withInstallationLock } from "./installation-lock.ts"
+import { IntegrationSelection, resolveIntegrationSelection } from "./integration-selection.ts"
+import {
+  assertClaudeSkillDirectories,
+  planClaudeMcp,
+  validClaudeMcpOwnership,
+  type ClaudeMcpOwnership
+} from "./claude-mcp.ts"
 import {
   canonicalJson as canonical,
   reconcileOwnedEvent,
@@ -45,14 +52,17 @@ export interface ClaudeInstallationRequest {
   readonly claudeExecutable?: string
   readonly proposalDigest?: string
   readonly reinstall?: boolean
+  readonly integrations?: IntegrationSelection
 }
 
 interface OwnedRecord {
   readonly version: 1
   readonly adapter: "claude"
   readonly home: string
-  readonly hookDigest: string
-  readonly command: string
+  readonly hookDigest?: string
+  readonly command?: string
+  readonly integrations?: IntegrationSelection
+  readonly mcp?: ClaudeMcpOwnership
   readonly implementation?: { readonly executable: string; readonly args: ReadonlyArray<string> }
   readonly bindingDigest?: string
   readonly hookGroups?: Record<string, unknown>
@@ -71,11 +81,13 @@ const encode = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 const error = (cause: unknown) => (cause instanceof Error ? cause.message : "installation failed")
 
-const paths = (home: string) => ({
+const paths = (home: string, customProfile = true) => ({
   settings: join(home, "settings.json"),
   binding: join(home, ".hapsland", "claude-hook-launcher.sh"),
   ownership: join(home, ".hapsland", "claude-installation-v1.json"),
-  lock: join(home, ".hapsland", "claude-installation.lock")
+  lock: join(home, ".hapsland", "claude-installation.lock"),
+  mcp: customProfile ? join(home, ".claude.json") : join(homedir(), ".claude.json"),
+  skill: join(home, "skills", "hapsland-rule-authoring", "SKILL.md")
 })
 
 const file = (path: string): string | undefined => {
@@ -129,7 +141,14 @@ const readRecord = (path: string): OwnedRecord | undefined => {
   if (
     value.version !== OWNERSHIP_VERSION ||
     value.adapter !== "claude" ||
-    !requiredStringFields(value, ["home", "hookDigest", "command"]) ||
+    !requiredStringFields(value, ["home"]) ||
+    !optionalStringField(value, "hookDigest") ||
+    !optionalStringField(value, "command") ||
+    (value.integrations === undefined
+      ? !requiredStringFields(value, ["hookDigest", "command"])
+      : !Schema.is(IntegrationSelection)(value.integrations) ||
+        (value.integrations.hooks && !requiredStringFields(value, ["hookDigest", "command"]))) ||
+    !validClaudeMcpOwnership(value.mcp) ||
     !optionalStringField(value, "bindingDigest") ||
     !validImplementationRecord(value.implementation) ||
     !validComposedRecord(value.composed)
@@ -213,9 +232,11 @@ const inputs = (
   request: ClaudeInstallationRequest,
   configured: { runtime: string; entrypoint: string },
   observed: string,
-  runtimeObserved: string
+  runtimeObserved: string,
+  configuredHome: string | undefined
 ) => {
-  const home = resolve(request.claudeHome ?? join(homedir(), ".claude"))
+  const selectedHome = request.claudeHome ?? configuredHome
+  const home = resolve(selectedHome ?? join(homedir(), ".claude"))
   const runtime = resolve(configured.runtime)
   let entrypoint = resolve(configured.entrypoint)
   try {
@@ -247,7 +268,7 @@ const inputs = (
     stopGroup,
     subagentStopGroup,
     promptGroup,
-    paths: paths(home),
+    paths: paths(home, selectedHome !== undefined),
     host: host(observed),
     runtimeObserved
   }
@@ -255,6 +276,10 @@ const inputs = (
 
 const resolveInputs = Effect.fn("ClaudeInstallation.inputs")(
   function* (request: ClaudeInstallationRequest) {
+    const configuredHome =
+      request.claudeHome === undefined
+        ? Option.getOrUndefined(yield* Config.option(Config.NonEmptyString("CLAUDE_CONFIG_DIR")))
+        : undefined
     const runtime = yield* Config.NonEmptyString("REVIEW_INSTALL_RUNTIME").pipe(
       Config.withDefault(packageCommand("hook").executable)
     )
@@ -277,7 +302,8 @@ const resolveInputs = Effect.fn("ClaudeInstallation.inputs")(
           request,
           { runtime, entrypoint },
           hostRun.succeeded ? hostRun.stdout.trim() : "unavailable",
-          runtimeRun.succeeded ? observedRuntimeVersion(runtimeRun.stdout) : "unavailable"
+          runtimeRun.succeeded ? observedRuntimeVersion(runtimeRun.stdout) : "unavailable",
+          configuredHome
         ),
       catch: () => new ClaudeInstallationError({ reason: "installation inputs unavailable" })
     })
@@ -405,31 +431,41 @@ const plannedSettings = (
     next = withComposedGroup(next, event.event, event.next, event.fingerprint, true, event.expected)
   return next
 }
-const installationOwnedRecord = (input: ClaudeInputs): OwnedRecord => ({
+const installationOwnedRecord = (
+  input: ClaudeInputs,
+  integrations: IntegrationSelection,
+  mcp: ClaudeMcpOwnership | undefined
+): OwnedRecord => ({
   version: OWNERSHIP_VERSION,
   adapter: "claude",
   home: input.home,
-  hookDigest: digest(canonical(input.group)),
-  command: input.command,
-  ...(input.binding === undefined
-    ? {}
-    : {
-        bindingDigest: input.binding.fingerprint,
-        implementation: commandFromEntrypoint(input.runtime, input.entrypoint)
-      }),
-  hookGroups: {
-    PostToolUse: input.group,
-    PreToolUse: input.preGroup,
-    Stop: input.stopGroup,
-    SubagentStop: input.subagentStopGroup,
-    UserPromptSubmit: input.promptGroup
-  },
-  composed: {
-    preToolUseDigest: digest(canonical(input.preGroup)),
-    stopDigest: digest(canonical(input.stopGroup)),
-    promptDigest: digest(canonical(input.promptGroup)),
-    subagentStopDigest: digest(canonical(input.subagentStopGroup))
-  }
+  integrations,
+  ...(mcp === undefined ? {} : { mcp }),
+  ...(integrations.hooks
+    ? {
+        hookDigest: digest(canonical(input.group)),
+        command: input.command,
+        ...(input.binding === undefined
+          ? {}
+          : {
+              bindingDigest: input.binding.fingerprint,
+              implementation: commandFromEntrypoint(input.runtime, input.entrypoint)
+            }),
+        hookGroups: {
+          PostToolUse: input.group,
+          PreToolUse: input.preGroup,
+          Stop: input.stopGroup,
+          SubagentStop: input.subagentStopGroup,
+          UserPromptSubmit: input.promptGroup
+        },
+        composed: {
+          preToolUseDigest: digest(canonical(input.preGroup)),
+          stopDigest: digest(canonical(input.stopGroup)),
+          promptDigest: digest(canonical(input.promptGroup)),
+          subagentStopDigest: digest(canonical(input.subagentStopGroup))
+        }
+      }
+    : {})
 })
 const missingContentDigest = (content: string | undefined): string => digest(content ?? "<missing>")
 const plannedSettingsContent = (
@@ -479,27 +515,53 @@ const plannedBindingContent = (
   return equivalent ? before : (input.binding?.content ?? before)
 }
 const plan = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnType<typeof inputs>) => {
-  const beforeSettings = file(input.paths.settings)
   const beforeRecord = file(input.paths.ownership)
-  const beforeBinding = file(input.paths.binding)
+  const previousRecord = readPlanRecord(request, input)
+  const integrations = Schema.decodeUnknownSync(IntegrationSelection)(
+    resolveIntegrationSelection(request.integrations, previousRecord?.integrations)
+  )
+  const managesHooks = integrations.hooks || previousRecord?.hookDigest !== undefined
+  const beforeSettings = managesHooks ? file(input.paths.settings) : undefined
+  const beforeBinding = managesHooks ? file(input.paths.binding) : undefined
   const originalSettings = parseObject(beforeSettings, "Claude settings.json")
   const settings = request.reinstall
     ? removeMarkedHandlers(originalSettings, [MARKER, COMPOSED_MARKER])
     : originalSettings
-  const previousRecord = readPlanRecord(request, input)
   const record = request.reinstall ? undefined : previousRecord
+  const hookRecord = record?.hookDigest === undefined ? undefined : record
   const current = owned(settings)
-  if (record === undefined) assertNoComposedRecord(settings)
-  assertOwnedHook(record, current)
+  if (hookRecord === undefined) assertNoComposedRecord(settings)
+  assertOwnedHook(hookRecord, current)
   assertPlanKind(kind, request, record, previousRecord)
-  const nextGroups = plannedPostToolGroups(kind, settings, input, current)
-  const nextSettings = plannedSettings(kind, settings, nextGroups, input, record)
-  const afterSettings = plannedSettingsContent(kind, record, beforeSettings, nextSettings)
-  assertOwnedBinding(beforeBinding, request, previousRecord)
-  const equivalent = equivalentUpdate(kind, previousRecord, beforeBinding, input, beforeSettings, afterSettings)
-  const afterBinding = plannedBindingContent(kind, previousRecord, equivalent, input, beforeBinding)
+  const hookKind = kind === "uninstall" || !integrations.hooks ? "uninstall" : kind
+  const nextGroups = plannedPostToolGroups(hookKind, settings, input, current)
+  const nextSettings = plannedSettings(hookKind, settings, nextGroups, input, hookRecord)
+  const afterSettings = plannedSettingsContent(hookKind, hookRecord, beforeSettings, nextSettings)
+  if (managesHooks) assertOwnedBinding(beforeBinding, request, previousRecord)
+  const equivalent = equivalentUpdate(hookKind, previousRecord, beforeBinding, input, beforeSettings, afterSettings)
+  const afterBinding = plannedBindingContent(hookKind, previousRecord, equivalent, input, beforeBinding)
+  const managesMcp = integrations.mcp || previousRecord?.mcp !== undefined
+  if (managesMcp) assertClaudeSkillDirectories(input.home, input.paths.skill)
+  const beforeMcp = managesMcp ? file(input.paths.mcp) : undefined
+  const beforeSkill = managesMcp ? file(input.paths.skill) : undefined
+  const mcp = managesMcp
+    ? planClaudeMcp({
+        enabled: kind !== "uninstall" && integrations.mcp,
+        configuration: input.paths.mcp,
+        beforeConfiguration: beforeMcp,
+        beforeSkill,
+        owned: previousRecord?.mcp,
+        target: input
+      })
+    : { afterConfiguration: beforeMcp, afterSkill: beforeSkill, ownership: undefined, entry: undefined }
   const afterRecord =
-    kind === "uninstall" ? undefined : equivalent ? beforeRecord : encode(installationOwnedRecord(input))
+    kind === "uninstall"
+      ? undefined
+      : encode(
+          equivalent && previousRecord !== undefined
+            ? { ...previousRecord, integrations, mcp: mcp.ownership }
+            : installationOwnedRecord(input, integrations, mcp.ownership)
+        )
   const proposalDigest = digest(
     canonical({
       version: 1,
@@ -511,7 +573,12 @@ const plan = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnType<
       beforeBinding: missingContentDigest(beforeBinding),
       afterBinding: missingContentDigest(afterBinding),
       afterSettings: missingContentDigest(afterSettings),
-      afterRecord: missingContentDigest(afterRecord)
+      afterRecord: missingContentDigest(afterRecord),
+      mcpConfiguration: input.paths.mcp,
+      beforeMcp: missingContentDigest(beforeMcp),
+      afterMcp: missingContentDigest(mcp.afterConfiguration),
+      beforeSkill: missingContentDigest(beforeSkill),
+      afterSkill: missingContentDigest(mcp.afterSkill)
     })
   )
   return {
@@ -522,8 +589,21 @@ const plan = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnType<
     afterBinding,
     afterSettings,
     afterRecord,
+    integrations,
+    managesHooks,
+    managesMcp,
+    beforeMcp,
+    beforeSkill,
+    afterMcp: mcp.afterConfiguration,
+    afterSkill: mcp.afterSkill,
+    mcpEntry: mcp.entry,
     proposalDigest,
-    noChange: beforeSettings === afterSettings && beforeRecord === afterRecord && beforeBinding === afterBinding
+    noChange:
+      beforeSettings === afterSettings &&
+      beforeRecord === afterRecord &&
+      beforeBinding === afterBinding &&
+      beforeMcp === mcp.afterConfiguration &&
+      beforeSkill === mcp.afterSkill
   }
 }
 
@@ -543,7 +623,10 @@ const proposalFileChange = (
   description: string
 ) => (before === after ? [] : [{ path, description }])
 const previewHookGroups = (kind: Kind, next: ReturnType<typeof plan>, input: ClaudeInputs): Record<string, unknown> => {
-  if (kind !== "uninstall") return installationOwnedRecord(input).hookGroups ?? {}
+  if (kind !== "uninstall")
+    return next.integrations.hooks
+      ? (installationOwnedRecord(input, next.integrations, undefined).hookGroups ?? {})
+      : {}
   if (next.beforeRecord === undefined) return {}
   return readRecord(input.paths.ownership)?.hookGroups ?? {}
 }
@@ -565,6 +648,7 @@ const preview = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnTy
       operation,
       status: "preview" as const,
       host: { adapter: "claude", home: input.home, compatibility },
+      integrations: next.integrations,
       proposal: {
         digest: next.proposalDigest,
         changes: [
@@ -580,10 +664,14 @@ const preview = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnTy
             next.afterBinding,
             input.paths.binding,
             "scoped hook implementation"
-          )
+          ),
+          ...proposalFileChange(next.beforeMcp, next.afterMcp, input.paths.mcp, "owned Hapsland stdio MCP entry"),
+          ...proposalFileChange(next.beforeSkill, next.afterSkill, input.paths.skill, "canonical rule-authoring skill")
         ],
         ownedChanges: {
           hooks: { file: input.paths.settings, groups: previewHookGroups(kind, next, input) },
+          mcp: { file: input.paths.mcp, entry: next.mcpEntry },
+          skill: { file: input.paths.skill },
           ownershipRecord: input.paths.ownership
         }
       },
@@ -593,6 +681,11 @@ const preview = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnTy
         status: next.beforeSettings === next.afterSettings ? "unchanged" : "native-confirmation-required",
         guidance:
           "Claude Code owns workspace trust and hook approval; open the repository normally and review native prompts."
+      },
+      reconnect: {
+        required: next.beforeMcp !== next.afterMcp || next.beforeSkill !== next.afterSkill,
+        guidance:
+          "Restart Claude Code after profile registration or skill changes; reconnect a running MCP server through /mcp. Print mode needs a new run."
       },
       pending: ["apply this proposal digest", "review effective file settings and credential access"]
     }
@@ -612,7 +705,12 @@ const assertClaudeFiles = (
 }
 const rollbackOwnedRecord = (input: ClaudeInputs, next: ReturnType<typeof plan>): void => {
   try {
-    if (file(input.paths.settings) === next.beforeSettings && file(input.paths.ownership) === next.afterRecord)
+    if (
+      (!next.managesHooks || file(input.paths.settings) === next.beforeSettings) &&
+      (!next.managesMcp ||
+        (file(input.paths.mcp) === next.beforeMcp && file(input.paths.skill) === next.beforeSkill)) &&
+      file(input.paths.ownership) === next.afterRecord
+    )
       atomicInstallationFile(input.paths.ownership, next.beforeRecord)
   } catch {
     /* Preserve primary failure; inspection exposes partial state. */
@@ -633,23 +731,37 @@ const rollbackOwnedBinding = (input: ClaudeInputs, next: ReturnType<typeof plan>
 const commitClaudePlan = (input: ClaudeInputs, next: ReturnType<typeof plan>): void => {
   // Settings is applied last; each owned file is checked before mutation.
   try {
-    assertClaudeFiles(
-      input.paths.ownership,
-      next.beforeRecord,
-      input.paths.settings,
-      next.beforeSettings,
-      "Claude configuration changed during apply; obtain a fresh preview"
-    )
-    if (file(input.paths.binding) !== next.beforeBinding) throw new Error("Claude hook launcher changed since preview")
+    if (file(input.paths.ownership) !== next.beforeRecord) throw new Error("Claude ownership changed since preview")
+    if (next.managesHooks) {
+      assertClaudeFiles(
+        input.paths.settings,
+        next.beforeSettings,
+        input.paths.binding,
+        next.beforeBinding,
+        "Claude hook configuration changed during apply; obtain a fresh preview"
+      )
+    }
+    if (next.managesMcp) {
+      assertClaudeFiles(
+        input.paths.mcp,
+        next.beforeMcp,
+        input.paths.skill,
+        next.beforeSkill,
+        "Claude MCP configuration or skill changed during apply; obtain a fresh preview"
+      )
+    }
     if (next.beforeRecord !== next.afterRecord) atomicInstallationFile(input.paths.ownership, next.afterRecord)
-    assertClaudeFiles(
-      input.paths.settings,
-      next.beforeSettings,
-      input.paths.ownership,
-      next.afterRecord,
-      "Claude configuration changed during apply; current settings were preserved"
-    )
+    if (next.managesHooks)
+      assertClaudeFiles(
+        input.paths.settings,
+        next.beforeSettings,
+        input.paths.ownership,
+        next.afterRecord,
+        "Claude configuration changed during apply; current settings were preserved"
+      )
     if (next.beforeBinding !== next.afterBinding) atomicInstallationFile(input.paths.binding, next.afterBinding)
+    if (next.beforeSkill !== next.afterSkill) atomicInstallationFile(input.paths.skill, next.afterSkill)
+    if (next.beforeMcp !== next.afterMcp) atomicInstallationFile(input.paths.mcp, next.afterMcp)
     if (next.beforeSettings !== next.afterSettings) atomicInstallationFile(input.paths.settings, next.afterSettings)
   } catch (cause) {
     rollbackOwnedBinding(input, next)
@@ -689,7 +801,14 @@ const apply = Effect.fn("ClaudeInstallation.apply")(function* (kind: Kind, reque
             trust: {
               status: next.beforeSettings === next.afterSettings ? "unchanged" : "native-confirmation-required"
             },
-            restart: { required: next.beforeSettings !== next.afterSettings }
+            integrations: next.integrations,
+            restart: {
+              required:
+                next.beforeSettings !== next.afterSettings ||
+                next.beforeMcp !== next.afterMcp ||
+                next.beforeSkill !== next.afterSkill
+            },
+            reconnect: { required: next.beforeMcp !== next.afterMcp || next.beforeSkill !== next.afterSkill }
           }
         },
         catch: (cause) => new ClaudeInstallationError({ reason: installationFailureReason(cause) })
@@ -725,7 +844,8 @@ export const uninstallClaudeIntegration = Effect.fn("ClaudeInstallation.uninstal
 
 /** Include damaged owned state so an update reports it instead of silently skipping the client. */
 export const hasClaudeRegistration = (request: ClaudeInstallationRequest): boolean => {
-  const selected = paths(resolve(request.claudeHome ?? join(homedir(), ".claude")))
+  const selectedHome = request.claudeHome ?? process.env.CLAUDE_CONFIG_DIR
+  const selected = paths(resolve(selectedHome ?? join(homedir(), ".claude")), selectedHome !== undefined)
   if (file(selected.ownership) !== undefined) return true
   const settings = file(selected.settings) ?? ""
   return settings.includes(MARKER) || settings.includes(COMPOSED_MARKER)
@@ -749,15 +869,40 @@ const inspectComposedOwnership = (settings: JsonObject, record: OwnedRecord | un
 }
 const inspect = (request: ClaudeInstallationRequest, input: ReturnType<typeof inputs>) => {
   try {
-    const settings = parseObject(file(input.paths.settings), "Claude settings.json")
     const record = readRecord(input.paths.ownership)
+    const integrations = resolveIntegrationSelection(undefined, record?.integrations)
+    const settings = integrations.hooks ? parseObject(file(input.paths.settings), "Claude settings.json") : {}
     const current = owned(settings)
     if (record === undefined) assertNoComposedRecord(settings)
     if (record === undefined && current === undefined)
       return { version: 1 as const, operation: "inspect-installation", status: "ready" as const, installed: false }
-    assertInspectionOwnership(record, current, input)
-    inspectComposedOwnership(settings, record)
-    return { version: 1 as const, operation: "inspect-installation", status: "ready" as const, installed: true }
+    if (integrations.hooks) {
+      assertInspectionOwnership(record, current, input)
+      inspectComposedOwnership(settings, record)
+    }
+    if (integrations.mcp) {
+      assertClaudeSkillDirectories(input.home, input.paths.skill)
+      const beforeConfiguration = file(input.paths.mcp)
+      const beforeSkill = file(input.paths.skill)
+      if (record?.mcp === undefined || beforeConfiguration === undefined || beforeSkill === undefined)
+        throw new Error("owned Claude MCP entry or skill is missing")
+      const mcp = planClaudeMcp({
+        enabled: true,
+        configuration: input.paths.mcp,
+        beforeConfiguration,
+        beforeSkill,
+        owned: record.mcp,
+        target: input
+      })
+      if (!mcp.installed) throw new Error("owned Claude MCP entry or skill is missing")
+    }
+    return {
+      version: 1 as const,
+      operation: "inspect-installation",
+      status: "ready" as const,
+      installed: true,
+      integrations
+    }
   } catch (cause) {
     return resultError("inspect-installation", cause, request.claudeHome)
   }
