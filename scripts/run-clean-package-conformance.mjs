@@ -538,7 +538,7 @@ try {
   // not, so keep the isolated resident endpoint in its own temporary root.
   const runtime =
     process.platform === "darwin"
-      ? (separateRuntime = await mkdtemp(join(tmpdir(), "review-resident-")))
+      ? (separateRuntime = await realpath(await mkdtemp(join(tmpdir(), "review-resident-"))))
       : join(temporary, "state", "resident")
   const calls = join(temporary, "state", "controlled-calls.txt")
   const outcomes = join(temporary, "state", "controlled-outcomes.jsonl")
