@@ -14,6 +14,7 @@ export type AdviceMetadata = {
   readonly analyticsPath: string | undefined
   readonly analyticsEnabled: boolean
   readonly analyticsControlled: boolean
+  readonly demoBudgetPath?: string | null
   readonly canonicalRoundId: number
   readonly round?: RoundWork
   readonly workUnitId?: number

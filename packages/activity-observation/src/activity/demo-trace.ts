@@ -31,7 +31,7 @@ const traceRuleIds = (ruleIds: readonly string[] | undefined) =>
   ruleIds === undefined ? {} : { ruleIds: ruleIds.slice(0, 16) }
 const traceState = (state: Trace["state"]) => (state === undefined ? {} : { state })
 const traceSourceHash = (entry: TraceEntry, root: string): string | undefined =>
-  entry.kind === "terminal" ? entry.sourceHash : demoSourceHash(root)
+  entry.kind === "edit" ? demoSourceHash(root) : entry.sourceHash
 const validSourceHash = (value: string | undefined): value is string =>
   value !== undefined && /^[a-f0-9]{64}$/.test(value)
 const recordTraceEntry = (budgetPath: string, root: string, advicee: DirectAdvicee, entry: TraceEntry): void => {

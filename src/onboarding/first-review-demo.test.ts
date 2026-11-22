@@ -1,6 +1,6 @@
 import { bunExecutable } from "@hapsland/runtime-environment/runtime/bun-runtime"
 import * as Effect from "effect/Effect"
-import { Deferred, Fiber } from "effect"
+import { ConfigProvider, Deferred, Fiber } from "effect"
 import { execFileAsync } from "../../scripts/test-harness/process.mjs"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -18,8 +18,9 @@ import {
   DemoExecutionError
 } from "@hapsland/administration/onboarding/first-review-demo"
 import { claimDemoBudget, readDemoBudgetUsage } from "@hapsland/activity-observation/activity/demo-budget"
-import { readDemoTrace, recordDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
+import { demoSourceHash, readDemoTrace, recordDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
 import { loadReviewSettings } from "@hapsland/review-definition/runtime/review-config"
+import { connectDefaultRuleFixture, configuredRules } from "@hapsland/build-tooling/test-support/default-rules"
 
 const roots: Array<string> = []
 
@@ -76,6 +77,8 @@ describe("installed-product first-review demo", () => {
     const test = fixture()
     const budget = join(test.root, "budget.json")
     writeFileSync(join(test.root, "session.ts"), "private synthetic source")
+    const sourceHash = demoSourceHash(test.root)
+    if (sourceHash === undefined) throw new Error("fixture source was not captured")
     writeFileSync(budget, JSON.stringify({ root: test.root }))
     const advicee = {
       agentRuntime: "codex-cli" as const,
@@ -87,10 +90,11 @@ describe("installed-product first-review demo", () => {
     }
     recordDemoTrace(budget, join(test.root, "other"), advicee, {
       kind: "delivery",
+      sourceHash,
       ruleIds: ["meaningless_combinations"]
     })
     expect(readDemoTrace(budget, "session")).toHaveLength(0)
-    recordDemoTrace(budget, test.root, advicee, { kind: "delivery", ruleIds: ["meaningless_combinations"] })
+    recordDemoTrace(budget, test.root, advicee, { kind: "delivery", sourceHash, ruleIds: ["meaningless_combinations"] })
     expect(readDemoTrace(budget, "session")).toMatchObject([
       { kind: "delivery", ruleIds: ["meaningless_combinations"] }
     ])
@@ -340,16 +344,33 @@ describe("installed-product first-review demo", () => {
     const proposal = await preview(test)
     if (proposal.status !== "preview") throw new Error("expected preview")
     const executable = join(test.root, "synthetic-host.cjs")
+    const promptPath = join(test.root, "prompt.json")
+    const paths = connectDefaultRuleFixture(proposal.demo.disposableRoot)
+    writeFileSync(
+      join(proposal.demo.disposableRoot, ".hapsland.jsonc"),
+      JSON.stringify({
+        version: 1,
+        includes: ["session.ts"],
+        rules: paths.map((path, index) => ({ path, enabled: index === 0 }))
+      })
+    )
     const stdout = `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "synthetic 🌲" } })}\n`
     const stderr = "é"
     writeFileSync(
       executable,
-      `#!${process.execPath}\nif(process.argv[2]==="--version")process.stdout.write("synthetic-host\\n");else{process.stdout.write(${JSON.stringify(stdout)});process.stderr.write(${JSON.stringify(stderr)});}\n`,
+      `#!${process.execPath}\nif(process.argv[2]==="--version")process.stdout.write("synthetic-host\\n");else{require("node:fs").writeFileSync(${JSON.stringify(promptPath)},JSON.stringify(process.argv.at(-1)));process.stdout.write(${JSON.stringify(stdout)});process.stderr.write(${JSON.stringify(stderr)});}\n`,
       { mode: 0o700 }
     )
     const result = await run(
       test,
-      runFirstReviewDemo({ ...liveRequest(proposal), codexExecutable: executable }, { statePath: test.demoStatePath })
+      runFirstReviewDemo(
+        { ...liveRequest(proposal), codexExecutable: executable },
+        { statePath: test.demoStatePath }
+      ).pipe(
+        Effect.provide(
+          ConfigProvider.layer(ConfigProvider.fromUnknown({ REVIEW_USER_CONFIG_PATH: join(test.root, "user.jsonc") }))
+        )
+      )
     )
     expect(result).toMatchObject({
       status: "inconclusive",
@@ -365,6 +386,11 @@ describe("installed-product first-review demo", () => {
       cleanup: { disposableRootRemoved: true }
     })
     expect(existsSync(proposal.demo.disposableRoot)).toBe(false)
+    const prompt: unknown = JSON.parse(readFileSync(promptPath, "utf8"))
+    const selected = configuredRules.find((rule) => rule.ruleId === "meaningless_combinations")
+    if (selected === undefined) throw new Error("fixture rule was not configured")
+    expect(prompt).toContain(JSON.stringify({ id: selected.ruleId, message: selected.message }))
+    expect(prompt).not.toContain("bare_domain_value")
     expect(readdirSync(test.demoStatePath)).toEqual([])
   })
 

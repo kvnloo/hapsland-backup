@@ -93,6 +93,7 @@ export const residentRetainAdvice = Effect.fn("ResidentRuntime.retainAdvice")((
         analyticsPath: job.dispatch.activityPath,
         analyticsEnabled: job.analyticsEnabled ?? job.dispatch.sessionAnalytics === true,
         analyticsControlled: job.dispatch.controlled !== null,
+        demoBudgetPath: job.dispatch.demoBudgetPath ?? null,
         id: randomUUID(),
         ...(job.round === undefined ? {} : { round: job.round }),
         ...(job.workUnitId === undefined ? {} : { workUnitId: job.workUnitId }),

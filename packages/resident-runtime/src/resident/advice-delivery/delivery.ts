@@ -6,6 +6,7 @@ import type { PendingNoticeSnapshot as PendingNotice } from "../state/notice-rec
 import type { RoundWork } from "../state/round-records.ts"
 import { type WorkRevision } from "../state/revision.ts"
 import { recordAnalytics } from "@hapsland/activity-observation/activity/analytics"
+import { recordDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
 import * as Effect from "effect/Effect"
 import { type PreparedReviewUnit } from "@hapsland/review-definition/direct-event/model"
 import { type EvaluatedReviewUnit } from "@hapsland/review-execution/direct-event/pipeline"
@@ -130,6 +131,14 @@ const residentAcknowledgeBatch = Effect.fn("ResidentRuntime.acknowledgeBatch")(f
   token: string
 ) {
   for (const group of residentSubmissionAnalyticsGroups(batch.advice)) residentRecordSubmissionAnalytics(deps, group)
+  for (const { capability, content } of batch.advice) {
+    if (!unacknowledgedDelivery(content.delivery)) continue
+    recordDemoTrace(capability.demoBudgetPath, capability.observation.root, capability.observation.advicee, {
+      kind: "delivery",
+      ...(capability.sourceHash === undefined ? {} : { sourceHash: capability.sourceHash }),
+      ruleIds: (content.delivery?.findings ?? []).map((finding) => finding.ruleId)
+    })
+  }
   for (const { capability } of batch.advice)
     yield* deps.residentLedger.advice.updateDelivery(capability, token, { submissionRecorded: true })
   for (const item of batch.notices) yield* deps.residentNotices.acknowledge(item.id)

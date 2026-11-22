@@ -1,15 +1,8 @@
-import * as Config from "effect/Config"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
-import * as Option from "effect/Option"
 import { recordActivity } from "@hapsland/activity-observation/activity/status"
-import { recordDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
-import {
-  claudeHostOutputText,
-  encodeClaudeHostOutputLine,
-  type ClaudeHostOutput
-} from "@hapsland/delivery-output/direct-event/claude-output"
+import { encodeClaudeHostOutputLine, type ClaudeHostOutput } from "@hapsland/delivery-output/direct-event/claude-output"
 import { attemptCodexHostOutput } from "@hapsland/delivery-output/direct-event/writer"
 import {
   recordAdviceSubmissionAndFinalizeEffect,
@@ -30,39 +23,32 @@ export class DirectHookSubmission extends Context.Service<
   }
 >()("Hapsland/DirectHookSubmission") {}
 
-export const directHookSubmissionLayer = Layer.effect(
+export const directHookSubmissionLayer = Layer.succeed(
   DirectHookSubmission,
-  Effect.gen(function* () {
-    const demoBudgetPath = yield* Config.option(Config.NonEmptyString("REVIEW_DEMO_BUDGET_PATH"))
-    return DirectHookSubmission.of({
-      begin: beginComposedSubmissionEffect,
-      release: releaseComposedSubmissionEffect,
-      acknowledge: recordAdviceSubmissionAndFinalizeEffect,
-      writeCodex: Effect.fn("DirectHookSubmission.writeCodex")(function* (value: ClaudeHostOutput) {
-        yield* Effect.sync(() => {
-          if ("hookSpecificOutput" in value)
-            attemptCodexHostOutput(value, (encoded) => {
-              process.stdout.write(encoded)
-            })
-        })
-      }),
-      record: Effect.fn("DirectHookSubmission.record")((advice: CollectedAdvice, value: ClaudeHostOutput) =>
-        Effect.sync(() => {
-          recordDemoTrace(Option.getOrUndefined(demoBudgetPath), advice.root, advice.advicee, {
-            kind: "delivery",
-            ruleIds: [...claudeHostOutputText(value).matchAll(/\[([a-z0-9_/-]+), p=/g)].map((match) => match[1] ?? "")
+  DirectHookSubmission.of({
+    begin: beginComposedSubmissionEffect,
+    release: releaseComposedSubmissionEffect,
+    acknowledge: recordAdviceSubmissionAndFinalizeEffect,
+    writeCodex: Effect.fn("DirectHookSubmission.writeCodex")(function* (value: ClaudeHostOutput) {
+      yield* Effect.sync(() => {
+        if ("hookSpecificOutput" in value)
+          attemptCodexHostOutput(value, (encoded) => {
+            process.stdout.write(encoded)
           })
-          recordActivity({
-            statePath: advice.activityPath,
-            root: advice.root,
-            advicee: advice.advicee,
-            lifetime: advice.lifetime,
-            stage: "submitted",
-            submittedFindings: advice.findingCount
-          })
+      })
+    }),
+    record: Effect.fn("DirectHookSubmission.record")((advice: CollectedAdvice) =>
+      Effect.sync(() => {
+        recordActivity({
+          statePath: advice.activityPath,
+          root: advice.root,
+          advicee: advice.advicee,
+          lifetime: advice.lifetime,
+          stage: "submitted",
+          submittedFindings: advice.findingCount
         })
-      )
-    })
+      })
+    )
   })
 )
 

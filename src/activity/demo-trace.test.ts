@@ -26,13 +26,14 @@ afterEach(() => {
 })
 it("records bounded source-free metadata for the owned session", () => {
   const { root, budgetPath, advicee } = fixture()
+  const sourceHash = demoSourceHash(root)
+  if (sourceHash === undefined) throw new Error("fixture source was not captured")
   recordDemoTrace(budgetPath, root, advicee, {
     kind: "delivery",
+    sourceHash,
     state: "findings",
     ruleIds: Array.from({ length: 20 }, (_, i) => `r${i}`)
   })
-  const sourceHash = demoSourceHash(root)
-  if (sourceHash === undefined) throw new Error("fixture source was not captured")
   recordDemoTrace(budgetPath, root, advicee, { kind: "terminal", sourceHash, state: "clear" })
   const entries = readDemoTrace(budgetPath, advicee.sessionId)
   expect(entries).toHaveLength(2)
@@ -47,8 +48,22 @@ it("fails quietly for missing evidence, an unowned root or invalid terminal iden
   for (const path of [undefined, null, join(root, "missing")]) recordDemoTrace(path, root, advicee, { kind: "edit" })
   recordDemoTrace(budgetPath, `${root}-other`, advicee, { kind: "edit" })
   recordDemoTrace(budgetPath, root, advicee, { kind: "terminal", sourceHash: "invalid" })
+  recordDemoTrace(budgetPath, root, advicee, { kind: "delivery" })
+  recordDemoTrace(budgetPath, root, advicee, { kind: "delivery", sourceHash: "invalid" })
   expect(readDemoTrace(budgetPath, advicee.sessionId)).toEqual([])
   expect(demoSourceHash(`${root}-other`)).toBeUndefined()
+})
+it("correlates delivery with evaluated source even after the current source changes", () => {
+  const { root, budgetPath, advicee } = fixture()
+  const sourceHash = demoSourceHash(root)
+  if (sourceHash === undefined) throw new Error("fixture source was not captured")
+  writeFileSync(join(root, "session.ts"), "type SyntheticCount = { value: number }\n")
+  recordDemoTrace(budgetPath, root, advicee, { kind: "delivery", sourceHash, ruleIds: ["bare_domain_value"] })
+  recordDemoTrace(budgetPath, root, advicee, { kind: "edit" })
+  const entries = readDemoTrace(budgetPath, advicee.sessionId)
+  expect(entries.find((entry) => entry.kind === "delivery")?.sourceHash).toBe(sourceHash)
+  expect(entries.find((entry) => entry.kind === "edit")?.sourceHash).toBe(demoSourceHash(root))
+  expect(demoSourceHash(root)).not.toBe(sourceHash)
 })
 it("rejects malformed trace fields and sorts valid entries by recorded time", () => {
   const { root: _root, budgetPath, advicee } = fixture()

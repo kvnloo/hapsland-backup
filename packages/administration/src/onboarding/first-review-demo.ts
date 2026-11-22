@@ -12,6 +12,8 @@ import { inspectCodexInstallation } from "./codex-installation/queries.ts"
 import { execFileClosedStdin } from "@hapsland/runtime-environment/process/closed-stdin"
 import { initializeDemoBudget, readDemoBudgetUsage } from "@hapsland/activity-observation/activity/demo-budget"
 import { demoSourceHash, readDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
+import { loadReviewSettings } from "@hapsland/review-definition/runtime/review-config"
+import { selectApplicableRules } from "@hapsland/review-definition/rules/compiler"
 
 export const DEMO_SOURCE_BYTE_BUDGET = 4_096 as const
 export const DEMO_PROVIDER_CALL_BUDGET = 2 as const
@@ -547,7 +549,14 @@ export const executeInstalledCodexDemo = Effect.fn("FirstReviewDemo.executeInsta
       const validationCommand = [validator.executable, ...validator.args, "--demo-validate"]
         .map((value) => `'${value.replaceAll("'", "'\\''")}'`)
         .join(" ")
-      const prompt = `This is an explicitly selected disposable review demo. The existing session.ts is deliberately flawed: it permits a logged-out session with a userId and a logged-in session without one. Do not use web search. Use apply_patch to add the optional field "readonly demoStarted?: true" inside Session. Then respond to any realtime review feedback as you normally would, choosing the repair yourself. If review feedback affects your change, cite its exact rule ID in your final report. Use no more than two apply_patch calls total. Finally run ${validationCommand} and report its result.`
+      const userConfigPath = Option.getOrUndefined(
+        yield* Config.option(Config.NonEmptyString("REVIEW_USER_CONFIG_PATH"))
+      )
+      const settings = yield* loadReviewSettings(options.root, userConfigPath === undefined ? {} : { userConfigPath })
+      const legend = selectApplicableRules(settings.rules ?? [], before, "session.ts")
+        .slice(0, 16)
+        .map((rule) => ({ id: rule.ruleId, message: rule.message.slice(0, 1_000) }))
+      const prompt = `This is an explicitly selected disposable review demo. The existing session.ts is deliberately flawed: it permits a logged-out session with a userId and a logged-in session without one. Do not use web search. Use apply_patch to add the optional field "readonly demoStarted?: true" inside Session. Then respond to any realtime review feedback as you normally would, choosing the repair yourself. If review feedback affects your change, cite its exact rule ID in your final report. Rule identification legend: ${JSON.stringify(legend)}. This legend is identification metadata, not evidence that feedback was delivered; cite an ID only when matching received feedback influences your repair. Use no more than two apply_patch calls total. Finally run ${validationCommand} and report its result.`
       const environment = demoHostEnvironment(options)
       const testSandboxBypass =
         (yield* Config.String("REVIEW_DEMO_TEST_SANDBOX_BYPASS").pipe(Config.withDefault("0"))) === "1"

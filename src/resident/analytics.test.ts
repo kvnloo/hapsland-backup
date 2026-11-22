@@ -23,6 +23,8 @@ import {
 } from "@hapsland/build-tooling/test-support/test-fixtures"
 import { configuredRules } from "@hapsland/build-tooling/test-support/default-rules"
 import { readAnalytics } from "@hapsland/activity-observation/activity/analytics"
+import { demoSourceHash, readDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
+import { initializeDemoBudget } from "@hapsland/activity-observation/activity/demo-budget"
 import { makeResidentReviewExecutionContextEffect as makeResidentReviewExecutionContext } from "@hapsland/resident-transport/resident/client"
 import { residentPaths } from "@hapsland/resident-transport/resident/paths"
 import { acquireResidentFixture } from "./runtime-fixture.ts"
@@ -188,10 +190,20 @@ describe("resident session analytics", () => {
     }
   })
 
-  it("records detected rule IDs and acknowledged submission once", async () => {
-    const f = await setup()
+  it.each([true, false])("records acknowledged delivery once with analytics enabled=%s", async (enabled) => {
+    const f = await setup(enabled)
+    await put(f.root, "session.ts", readFileSync(join(f.root, "type.ts"), "utf8"))
+    const budgetPath = join(f.root, "demo-budget.json")
+    initializeDemoBudget(budgetPath, {
+      root: f.root,
+      expiresAt: Date.now() + 60_000,
+      sourceByteBudget: 4_096,
+      providerCallBudget: 2
+    })
+    const sourceHash = demoSourceHash(f.root)
     const dispatch = {
       ...f.dispatch,
+      demoBudgetPath: budgetPath,
       controlled: {
         answers: Object.fromEntries(
           configuredRules.map((rule) => [
@@ -206,15 +218,17 @@ describe("resident session analytics", () => {
       const observation = await f.observation("finding")
       expect((await Effect.runPromise(server.admit(observation, dispatch, true))).status).toBe("accepted")
       await Effect.runPromise(server.whenIdle())
-      expect(f.read().controlledTotals).toMatchObject({
-        requestsStarted: 1,
-        requestsSucceeded: 1,
-        reviewsWithFindings: 1,
-        findings: 1
-      })
-      expect(f.read().details.find((detail) => detail.kind === "review-service-request-findings")?.ruleIds).toEqual([
-        "bare_domain_value"
-      ])
+      if (enabled)
+        expect(f.read().controlledTotals).toMatchObject({
+          requestsStarted: 1,
+          requestsSucceeded: 1,
+          reviewsWithFindings: 1,
+          findings: 1
+        })
+      if (enabled)
+        expect(f.read().details.find((detail) => detail.kind === "review-service-request-findings")?.ruleIds).toEqual([
+          "bare_domain_value"
+        ])
       const response = await Effect.runPromise(
         server.handle({
           requestRoute: "shared",
@@ -228,12 +242,24 @@ describe("resident session analytics", () => {
         })
       )
       if (response.status !== "advice") throw new Error("fixture finding was not collected")
+      expect(JSON.stringify(response.output)).not.toContain("bare_domain_value")
+      expect((await Effect.runPromise(server.acknowledge("unissued-demo-delivery"))).status).toBe("empty")
+      expect(
+        readDemoTrace(budgetPath, observation.advicee.sessionId).filter((entry) => entry.kind === "delivery")
+      ).toEqual([])
+      await put(f.root, "session.ts", "type OrderCount = { value: number }\n")
       expect((await Effect.runPromise(server.beginComposedSubmission(response.token, "background"))).status).toBe(
         "submitting"
       )
       expect((await Effect.runPromise(server.acknowledge(response.token))).status).toBe("acknowledged")
       await Effect.runPromise(server.acknowledge(response.token))
-      expect(f.read().controlledTotals).toMatchObject({ submissions: 1, submittedFindings: 1 })
+      if (enabled) expect(f.read().controlledTotals).toMatchObject({ submissions: 1, submittedFindings: 1 })
+      const delivered = readDemoTrace(budgetPath, observation.advicee.sessionId).filter(
+        (entry) => entry.kind === "delivery"
+      )
+      expect(delivered).toHaveLength(1)
+      expect(delivered[0]).toMatchObject({ ruleIds: ["bare_domain_value"], sourceHash })
+      expect(delivered[0]?.sourceHash).not.toBe(demoSourceHash(f.root))
       expect((await Effect.runPromise(server.finalize(response.token))).status).toBe("finalized")
     } finally {
       await Effect.runPromise(server.close)
