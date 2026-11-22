@@ -20,7 +20,7 @@ import {
   rm,
   writeFile
 } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -935,6 +935,25 @@ try {
   const credentialLifecycle = join(temporary, "state", "credential-state.json")
   await mkdir(join(temporary, "state"), { recursive: true, mode: 0o700 })
   env.REVIEW_CREDENTIAL_STATE_PATH = credentialLifecycle
+  const installedCredentialHelper = join(
+    packageDirectory,
+    "native",
+    "prebuilt",
+    `${process.platform}-${process.arch}`,
+    "credential-secret-service"
+  )
+  let nativeCredentialHelper = installedCredentialHelper
+  if (process.platform === "darwin" && exerciseSecretService) {
+    // Security's fixture default Keychain belongs to the original OS home.
+    // Restore it only for the actual installed native helper; app homes stay isolated.
+    nativeCredentialHelper = join(temporary, "native-keychain-helper.sh")
+    await writeFile(
+      nativeCredentialHelper,
+      `#!/bin/sh\nHOME=${quote(process.env.HOME ?? homedir())} exec ${quote(installedCredentialHelper)} "$@"\n`,
+      { mode: 0o700 }
+    )
+    env.REVIEW_CREDENTIAL_HELPER = nativeCredentialHelper
+  }
   if (exerciseCredentialFixture) {
     if (process.platform !== "linux") throw new Error("the deterministic credential fixture is Linux-only")
     const helper = join(temporary, "credential-helper.mjs")
@@ -1012,13 +1031,7 @@ else if (operation === "get") {
         { cwd: temporary, env }
       )
       if (addSecondary.code !== 0) throw new Error("secondary Keychain fixture credential could not be created")
-      const helper = join(
-        packageDirectory,
-        "native",
-        "prebuilt",
-        `${process.platform}-${process.arch}`,
-        "credential-secret-service"
-      )
+      const helper = nativeCredentialHelper
       const beforeReplacement = await mustRun(helper, ["get"], { cwd: temporary, env })
       if (
         !beforeReplacement.stdout.endsWith(syntheticCredential) ||
@@ -1064,7 +1077,17 @@ else if (operation === "get") {
           : "actual-secret-service",
       loginMs: Date.now() - loginStarted,
       separateProcessLookupMs: Date.now() - lookupStarted,
-      defaultKeychainIsolation
+      defaultKeychainIsolation,
+      ...(process.platform === "darwin" && exerciseSecretService
+        ? {
+            nativeHelper: {
+              sha256: createHash("sha256")
+                .update(await readFile(installedCredentialHelper))
+                .digest("hex"),
+              home: "original-os-home-for-native-helper-child-only"
+            }
+          }
+        : {})
     }
   }
   await mkdir(codexHome, { recursive: true, mode: 0o700 })
@@ -1938,13 +1961,7 @@ appendFileSync(process.env.INDEPENDENT_HOOK_LOG, JSON.stringify(record) + "\\n")
       env,
       input: `${syntheticCredential}\n`
     })
-    const installedHelper = join(
-      packageDirectory,
-      "native",
-      "prebuilt",
-      `${process.platform}-${process.arch}`,
-      "credential-secret-service"
-    )
+    const installedHelper = nativeCredentialHelper
     if (process.platform === "linux") {
       await mustRun(installedHelper, ["lock"], { cwd: temporary, env })
     } else if (process.platform === "darwin") {
