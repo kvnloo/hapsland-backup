@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "smol-toml": "catalog:",
     "@babel/parser": "catalog:",
     "@babel/traverse": "catalog:",
     "@bcoe/v8-coverage": "catalog:",

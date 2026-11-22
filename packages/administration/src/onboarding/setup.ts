@@ -25,7 +25,7 @@ import {
 } from "./codex-installation/index.ts"
 import {
   installClaudeIntegration,
-  hasClaudeRegistration,
+  claudeSetupOperation,
   previewClaudeInstallation,
   previewClaudeUpdate,
   updateClaudeIntegration
@@ -694,19 +694,21 @@ const installationOperations = (request: SetupRequest) => {
     ...(request.claudeHome === undefined ? {} : { claudeHome: request.claudeHome }),
     ...(request.claudeExecutable === undefined ? {} : { claudeExecutable: request.claudeExecutable })
   }
-  const claudeInstalled = hasClaudeRegistration(claudeRequest)
   const preview = Effect.fn("Setup.previewInstallation")(function* () {
-    if (!claudeInstalled) return yield* previewClaudeInstallation(claudeRequest)
+    if ((yield* claudeSetupOperation(claudeRequest)) === "install")
+      return yield* previewClaudeInstallation(claudeRequest)
     const target = yield* previewClaudeUpdate(claudeRequest)
     const changes = list(record(record(target)?.proposal)?.changes)
     return { ...target, installed: target.status === "preview" && changes.length === 0 }
   })
   return {
     preview,
-    install: (proposalDigest: string) =>
-      claudeInstalled
+    install: Effect.fn("Setup.applyClaudeInstallation")(function* (proposalDigest: string) {
+      const operation = yield* claudeSetupOperation(claudeRequest)
+      return yield* operation === "update"
         ? updateClaudeIntegration({ ...claudeRequest, proposalDigest })
         : installClaudeIntegration({ ...claudeRequest, proposalDigest })
+    })
   }
 }
 

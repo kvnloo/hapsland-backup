@@ -80,8 +80,236 @@ const digestOf = (preview: object) => {
   expect(proposal?.digest).toMatch(/^[a-f0-9]{64}$/)
   return proposal!.digest
 }
+const interruptedMcpUpdate = async () => {
+  const first = mcpFixture()
+  const request = {
+    claudeHome: first.home,
+    claudeExecutable: first.claudeExecutable,
+    integrations: { hooks: false, mcp: true }
+  }
+  await runInstallation(
+    installClaudeIntegration({
+      ...request,
+      proposalDigest: digestOf(await runPreview(previewClaudeInstallation(request)))
+    })
+  )
+  const second = mcpFixture()
+  writeFileSync(second.skill, `${readFileSync(second.skill, "utf8")}\n<!-- replacement -->\n`)
+  const preview = await runPreview(previewClaudeUpdate(request))
+  chmodSync(first.home, 0o500)
+  try {
+    expect(
+      await runInstallation(updateClaudeIntegration({ ...request, proposalDigest: digestOf(preview) }))
+    ).toMatchObject({ status: "conflict" })
+  } finally {
+    chmodSync(first.home, 0o700)
+  }
+  return {
+    first,
+    second,
+    request,
+    preview,
+    record: join(first.home, ".hapsland", "claude-installation-v1.json"),
+    configuration: join(first.home, ".claude.json"),
+    skill: join(first.home, "skills", "hapsland-rule-authoring", "SKILL.md")
+  }
+}
 
 describe("Claude installation lifecycle", () => {
+  it("reinstalls damaged stable custody while refusing malformed pending custody", async () => {
+    const test = fixture()
+    const request = { claudeHome: test.home, claudeExecutable: test.claudeExecutable }
+    await runInstallation(
+      installClaudeIntegration({
+        ...request,
+        proposalDigest: digestOf(await runPreview(previewClaudeInstallation(request)))
+      })
+    )
+    const ownership = join(test.home, ".hapsland", "claude-installation-v1.json")
+    writeFileSync(ownership, "{ damaged stable record")
+    const reinstall = { ...request, reinstall: true }
+    const preview = await runPreview(previewClaudeInstallation(reinstall))
+    expect(preview).toMatchObject({ status: "preview" })
+    expect(
+      await runInstallation(installClaudeIntegration({ ...reinstall, proposalDigest: digestOf(preview) }))
+    ).toMatchObject({ status: "complete" })
+    expect(await runPreview(inspectClaudeInstallation(request))).toMatchObject({ installed: true })
+    writeFileSync(ownership, JSON.stringify({ pending: {} }))
+    expect(await runPreview(previewClaudeInstallation(reinstall))).toMatchObject({ status: "conflict" })
+  })
+  it.skipIf(process.getuid?.() === 0)(
+    "recovers a combined installation transition to hooks-only without losing independent settings",
+    async () => {
+      const first = mcpFixture()
+      writeFileSync(join(first.home, "settings.json"), JSON.stringify({ permissions: { allow: ["Read"] } }))
+      const request = {
+        claudeHome: first.home,
+        claudeExecutable: first.claudeExecutable,
+        integrations: { hooks: true, mcp: true }
+      }
+      await runInstallation(
+        installClaudeIntegration({
+          ...request,
+          proposalDigest: digestOf(await runPreview(previewClaudeInstallation(request)))
+        })
+      )
+      const ordered = JSON.parse(readFileSync(join(first.home, "settings.json"), "utf8"))
+      ordered.hooks.PostToolUse = [
+        { hooks: [{ type: "command", command: "independent-before" }] },
+        ...ordered.hooks.PostToolUse,
+        { hooks: [{ type: "command", command: "independent-after" }] }
+      ]
+      writeFileSync(join(first.home, "settings.json"), JSON.stringify(ordered))
+      mcpFixture()
+      const hooksOnly = { ...request, integrations: { hooks: true, mcp: false } }
+      const preview = await runPreview(previewClaudeUpdate(hooksOnly))
+      chmodSync(first.home, 0o500)
+      try {
+        expect(
+          await runInstallation(updateClaudeIntegration({ ...hooksOnly, proposalDigest: digestOf(preview) }))
+        ).toMatchObject({ status: "conflict" })
+      } finally {
+        chmodSync(first.home, 0o700)
+      }
+      const recovery = await runPreview(previewClaudeUpdate(hooksOnly))
+      expect(digestOf(recovery)).toBe(digestOf(preview))
+      expect(
+        await runInstallation(updateClaudeIntegration({ ...hooksOnly, proposalDigest: digestOf(recovery) }))
+      ).toMatchObject({ status: "complete" })
+      expect(settings(first.home)).toMatchObject({ permissions: { allow: ["Read"] } })
+      const post = JSON.parse(readFileSync(join(first.home, "settings.json"), "utf8")).hooks.PostToolUse
+      expect(post[0].hooks[0].command).toBe("independent-before")
+      expect(post[1].hooks[0].command).toContain("--review-tool-owned=claude-v1")
+      expect(post[2].hooks[0].command).toBe("independent-after")
+      expect(JSON.parse(readFileSync(join(first.home, ".claude.json"), "utf8")).mcpServers).toBeUndefined()
+      expect(existsSync(join(first.home, "skills", "hapsland-rule-authoring", "SKILL.md"))).toBe(false)
+      expect(await runPreview(inspectClaudeInstallation(hooksOnly))).toMatchObject({
+        installed: true,
+        integrations: { hooks: true, mcp: false }
+      })
+    }
+  )
+  it.skipIf(process.getuid?.() === 0)("preserves third-state owned edits instead of recovering over them", async () => {
+    const test = await interruptedMcpUpdate()
+    writeFileSync(test.skill, "operator edit")
+    const before = [test.record, test.configuration, test.skill].map((path) => readFileSync(path, "utf8"))
+    expect(await runPreview(previewClaudeUpdate(test.request))).toMatchObject({ status: "conflict" })
+    expect(
+      await runInstallation(updateClaudeIntegration({ ...test.request, proposalDigest: digestOf(test.preview) }))
+    ).toMatchObject({ status: "conflict" })
+    expect([test.record, test.configuration, test.skill].map((path) => readFileSync(path, "utf8"))).toEqual(before)
+  })
+  it.skipIf(process.getuid?.() === 0)(
+    "requires fresh recovery approval for unrelated MCP edits and preserves them",
+    async () => {
+      const test = await interruptedMcpUpdate()
+      const document = JSON.parse(readFileSync(test.configuration, "utf8"))
+      document.mcpServers.independent = { command: "operator-server" }
+      writeFileSync(test.configuration, JSON.stringify(document))
+      const recovery = await runPreview(previewClaudeUpdate(test.request))
+      expect(digestOf(recovery)).not.toBe(digestOf(test.preview))
+      expect(
+        await runInstallation(updateClaudeIntegration({ ...test.request, proposalDigest: digestOf(test.preview) }))
+      ).toMatchObject({ status: "proposal-mismatch" })
+      expect(
+        await runInstallation(updateClaudeIntegration({ ...test.request, proposalDigest: digestOf(recovery) }))
+      ).toMatchObject({ status: "complete" })
+      expect(JSON.parse(readFileSync(test.configuration, "utf8")).mcpServers.independent).toEqual({
+        command: "operator-server"
+      })
+    }
+  )
+  it.skipIf(process.getuid?.() === 0)(
+    "refuses pending recovery with changed target bytes or malformed pending custody",
+    async () => {
+      const test = await interruptedMcpUpdate()
+      writeFileSync(test.second.cli, "changed selected executable")
+      expect(await runPreview(previewClaudeUpdate(test.request))).toMatchObject({ status: "conflict" })
+      const record = JSON.parse(readFileSync(test.record, "utf8"))
+      record.pending.slots.skill.after = "not a fingerprint"
+      writeFileSync(test.record, JSON.stringify(record))
+      expect(await runPreview(previewClaudeUpdate(test.request))).toMatchObject({ status: "conflict" })
+      expect(readFileSync(test.skill, "utf8")).toBe(readFileSync(test.second.skill, "utf8"))
+    }
+  )
+  it.skipIf(process.getuid?.() === 0)(
+    "recovers partial uninstall without loading missing target assets and removes custody last",
+    async () => {
+      const test = mcpFixture()
+      const request = {
+        claudeHome: test.home,
+        claudeExecutable: test.claudeExecutable,
+        integrations: { hooks: false, mcp: true }
+      }
+      await runInstallation(
+        installClaudeIntegration({
+          ...request,
+          proposalDigest: digestOf(await runPreview(previewClaudeInstallation(request)))
+        })
+      )
+      const preview = await runPreview(uninstallClaudeIntegration(request))
+      chmodSync(test.home, 0o500)
+      try {
+        expect(
+          await runInstallation(uninstallClaudeIntegration({ ...request, proposalDigest: digestOf(preview) }))
+        ).toMatchObject({ status: "conflict" })
+      } finally {
+        chmodSync(test.home, 0o700)
+      }
+      const ownership = join(test.home, ".hapsland", "claude-installation-v1.json")
+      expect(JSON.parse(readFileSync(ownership, "utf8"))).toMatchObject({ pending: { operation: "uninstall" } })
+      expect(existsSync(join(test.home, "skills", "hapsland-rule-authoring", "SKILL.md"))).toBe(false)
+      rmSync(test.cli)
+      rmSync(test.skill)
+      const recovery = await runPreview(uninstallClaudeIntegration(request))
+      expect(digestOf(recovery)).toBe(digestOf(preview))
+      expect(
+        await runInstallation(uninstallClaudeIntegration({ ...request, proposalDigest: digestOf(recovery) }))
+      ).toMatchObject({ status: "complete" })
+      expect(existsSync(ownership)).toBe(false)
+      expect(await runPreview(uninstallClaudeIntegration(request))).toMatchObject({ alreadyCurrent: true })
+    }
+  )
+  it.skipIf(process.getuid?.() === 0)(
+    "recovers a partially written MCP update using the same approved target",
+    async () => {
+      const first = mcpFixture()
+      const request = {
+        claudeHome: first.home,
+        claudeExecutable: first.claudeExecutable,
+        integrations: { hooks: false, mcp: true }
+      }
+      const installed = await runPreview(previewClaudeInstallation(request))
+      expect(
+        await runInstallation(installClaudeIntegration({ ...request, proposalDigest: digestOf(installed) }))
+      ).toMatchObject({ status: "complete" })
+      const second = mcpFixture()
+      writeFileSync(second.skill, `${readFileSync(second.skill, "utf8")}\n<!-- changed target -->\n`)
+      const proposed = await runPreview(previewClaudeUpdate(request))
+      chmodSync(first.home, 0o500)
+      try {
+        expect(
+          await runInstallation(updateClaudeIntegration({ ...request, proposalDigest: digestOf(proposed) }))
+        ).toMatchObject({ status: "conflict" })
+      } finally {
+        chmodSync(first.home, 0o700)
+      }
+      expect(readFileSync(join(first.home, "skills", "hapsland-rule-authoring", "SKILL.md"), "utf8")).toBe(
+        readFileSync(second.skill, "utf8")
+      )
+      const recovery = await runPreview(previewClaudeUpdate(request))
+      expect(recovery).toMatchObject({ status: "preview" })
+      expect(digestOf(recovery)).toBe(digestOf(proposed))
+      expect(
+        await runInstallation(updateClaudeIntegration({ ...request, proposalDigest: digestOf(recovery) }))
+      ).toMatchObject({ status: "complete" })
+      expect(JSON.parse(readFileSync(join(first.home, ".claude.json"), "utf8")).mcpServers.hapsland.args).toEqual([
+        second.cli,
+        "mcp"
+      ])
+      expect(await runPreview(previewClaudeUpdate(request))).toMatchObject({ alreadyCurrent: true })
+    }
+  )
   it("binds MCP command and canonical skill to the same explicitly selected package as hooks", async () => {
     const { home, claudeExecutable, cli, skill } = mcpFixture()
     const targetSkill = `${readFileSync(skill, "utf8")}\n<!-- selected retained target -->\n`
@@ -673,7 +901,7 @@ it("explicit Claude reinstall replaces changed and duplicate marked handlers whi
 })
 
 it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-  "rolls back a published record when settings cannot be written",
+  "retains pending custody and resumes when settings cannot initially be written",
   async () => {
     const { home, claudeExecutable } = fixture()
     const settingsPath = join(home, "settings.json")
@@ -688,10 +916,18 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
       const result = await runInstallation(installClaudeIntegration({ ...request, proposalDigest: digestOf(preview) }))
       expect(result.status).toBe("conflict")
       expect(readFileSync(settingsPath, "utf8")).toBe(original)
-      expect(existsSync(join(ownershipDirectory, "claude-installation-v1.json"))).toBe(false)
+      expect(JSON.parse(readFileSync(join(ownershipDirectory, "claude-installation-v1.json"), "utf8"))).toMatchObject({
+        pending: { operation: "install", approvedProposalDigest: digestOf(preview) }
+      })
     } finally {
       chmodSync(home, 0o700)
     }
+    const recovery = await runPreview(previewClaudeInstallation(request))
+    expect(digestOf(recovery)).toBe(digestOf(preview))
+    expect(
+      await runInstallation(installClaudeIntegration({ ...request, proposalDigest: digestOf(recovery) }))
+    ).toMatchObject({ status: "complete" })
+    expect(settings(home)).toMatchObject({ userSetting: "retained" })
   }
 )
 

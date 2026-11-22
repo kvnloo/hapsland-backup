@@ -1,3 +1,4 @@
+import { establishNativeTrust } from "./native-codex-trust.mjs"
 import { BUN_VERSION } from "./pinned-bun.mjs"
 import { commandHooks } from "@hapsland/runtime-environment/runtime/hook-catalog"
 import { cleanupOwnedResident } from "./test-harness/cleanup-owned-resident.mjs"
@@ -20,7 +21,7 @@ import {
   rm,
   writeFile
 } from "node:fs/promises"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
 import { basename, dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -48,9 +49,12 @@ if (registryArtifact && suppliedArchive !== undefined)
 if (registryArtifact && !/^[0-9a-f]{64}$/.test(expectedSha256 ?? "")) {
   throw new Error("registry conformance requires --expected-sha256=REVIEWED_ARCHIVE_SHA256")
 }
+if (process.platform === "darwin" && process.argv.includes("--secret-service"))
+  throw new Error(
+    "Darwin native credential qualification is unavailable: the fixture must preserve OS Keychain state before it can be enabled"
+  )
 const exerciseSecretService =
-  !process.argv.includes("--skip-credential-lifecycle") &&
-  (process.argv.includes("--secret-service") || process.platform === "darwin")
+  !process.argv.includes("--skip-credential-lifecycle") && process.argv.includes("--secret-service")
 const exerciseCredentialFixture = process.argv.includes("--credential-fixture")
 const exerciseCredentialLifecycle = exerciseSecretService || exerciseCredentialFixture
 let selectedCodexVersion
@@ -257,277 +261,10 @@ const runInstalledHooks = async (codexHome, event, options) => {
   return outputs
 }
 
-class TerminalScreen {
-  constructor(rows, columns) {
-    this.rows = rows
-    this.columns = columns
-    this.cells = Array.from({ length: rows }, () => Array(columns).fill(" "))
-    this.row = 0
-    this.column = 0
-    this.saved = [0, 0]
-    this.pending = ""
-  }
-
-  text() {
-    return this.cells.map((row) => row.join("").trimEnd()).join("\n")
-  }
-
-  feed(chunk) {
-    const input = this.pending + chunk
-    this.pending = ""
-    let offset = 0
-    while (offset < input.length) {
-      const character = input[offset]
-      if (character === "\u001b") {
-        if (offset + 1 >= input.length) {
-          this.pending = input.slice(offset)
-          break
-        }
-        const kind = input[offset + 1]
-        if (kind === "[") {
-          let end = offset + 2
-          while (end < input.length && !/[@-~]/.test(input[end])) end += 1
-          if (end === input.length) {
-            this.pending = input.slice(offset)
-            break
-          }
-          this.#csi(input.slice(offset + 2, end), input[end])
-          offset = end + 1
-          continue
-        }
-        if (kind === "]") {
-          let end = offset + 2
-          while (end < input.length && input[end] !== "\u0007" && !(input[end] === "\u001b" && input[end + 1] === "\\"))
-            end += 1
-          if (end === input.length) {
-            this.pending = input.slice(offset)
-            break
-          }
-          offset = input[end] === "\u0007" ? end + 1 : end + 2
-          continue
-        }
-        if (kind === "7") this.saved = [this.row, this.column]
-        else if (kind === "8") [this.row, this.column] = this.saved
-        else if (kind === "D") this.#lineFeed()
-        else if (kind === "E") {
-          this.column = 0
-          this.#lineFeed()
-        }
-        offset += 2
-        continue
-      }
-      if (character === "\r") this.column = 0
-      else if (character === "\n") this.#lineFeed()
-      else if (character === "\b") this.column = Math.max(0, this.column - 1)
-      else if (character === "\t") this.column = Math.min(this.columns - 1, (Math.floor(this.column / 8) + 1) * 8)
-      else if (character >= " " && character !== "\u007f") this.#write(character)
-      offset += 1
-    }
-  }
-
-  #blankRow() {
-    return Array(this.columns).fill(" ")
-  }
-
-  #lineFeed() {
-    if (this.row === this.rows - 1) {
-      this.cells.shift()
-      this.cells.push(this.#blankRow())
-    } else this.row += 1
-  }
-
-  #write(character) {
-    this.cells[this.row][this.column] = character
-    if (this.column === this.columns - 1) {
-      this.column = 0
-      this.#lineFeed()
-    } else this.column += 1
-  }
-
-  #csi(rawParameters, final) {
-    const parameters = rawParameters
-      .replace(/^[?!>]/, "")
-      .split(";")
-      .map((value) => (value === "" ? 0 : Number(value)))
-    const first = parameters[0] || 1
-    if (final === "H" || final === "f") {
-      this.row = Math.max(0, Math.min(this.rows - 1, (parameters[0] || 1) - 1))
-      this.column = Math.max(0, Math.min(this.columns - 1, (parameters[1] || 1) - 1))
-    } else if (final === "A") this.row = Math.max(0, this.row - first)
-    else if (final === "B") this.row = Math.min(this.rows - 1, this.row + first)
-    else if (final === "C") this.column = Math.min(this.columns - 1, this.column + first)
-    else if (final === "D") this.column = Math.max(0, this.column - first)
-    else if (final === "E") {
-      this.row = Math.min(this.rows - 1, this.row + first)
-      this.column = 0
-    } else if (final === "F") {
-      this.row = Math.max(0, this.row - first)
-      this.column = 0
-    } else if (final === "G") this.column = Math.max(0, Math.min(this.columns - 1, first - 1))
-    else if (final === "d") this.row = Math.max(0, Math.min(this.rows - 1, first - 1))
-    else if (final === "J") this.#eraseDisplay(parameters[0] || 0)
-    else if (final === "K") this.#eraseLine(parameters[0] || 0)
-    else if (final === "X") this.cells[this.row].fill(" ", this.column, Math.min(this.columns, this.column + first))
-    else if (final === "S") {
-      for (let count = 0; count < first; count += 1) {
-        this.cells.shift()
-        this.cells.push(this.#blankRow())
-      }
-    } else if (final === "T") {
-      for (let count = 0; count < first; count += 1) {
-        this.cells.pop()
-        this.cells.unshift(this.#blankRow())
-      }
-    } else if (final === "s") this.saved = [this.row, this.column]
-    else if (final === "u") [this.row, this.column] = this.saved
-  }
-
-  #eraseDisplay(mode) {
-    if (mode === 2 || mode === 3) this.cells = Array.from({ length: this.rows }, () => this.#blankRow())
-    else if (mode === 0) {
-      this.cells[this.row].fill(" ", this.column)
-      for (let row = this.row + 1; row < this.rows; row += 1) this.cells[row].fill(" ")
-    } else if (mode === 1) {
-      for (let row = 0; row < this.row; row += 1) this.cells[row].fill(" ")
-      this.cells[this.row].fill(" ", 0, this.column + 1)
-    }
-  }
-
-  #eraseLine(mode) {
-    if (mode === 0) this.cells[this.row].fill(" ", this.column)
-    else if (mode === 1) this.cells[this.row].fill(" ", 0, this.column + 1)
-    else if (mode === 2) this.cells[this.row].fill(" ")
-  }
-}
-
-const establishNativeTrust = (codexHome, repository, env) =>
-  new Promise((resolveTrust, rejectTrust) => {
-    if (!process.stdin.isTTY) {
-      rejectTrust(new Error("native Codex trust review requires a terminal; rerun real-host conformance from a TTY"))
-      return
-    }
-    const command = `stty rows 24 cols 80; exec ${quote("codex")} --no-alt-screen -C ${quote(repository)}`
-    const scriptArguments =
-      process.platform === "darwin" ? ["-q", "/dev/null", "/bin/sh", "-c", command] : ["-qefc", command, "/dev/null"]
-    const child = spawn("script", scriptArguments, {
-      cwd: repository,
-      env: { ...env, CODEX_HOME: codexHome, TERM: "xterm-256color" },
-      stdio: ["inherit", "pipe", "pipe"]
-    })
-    const screen = new TerminalScreen(24, 80)
-    let repositorySelected = false
-    let hookSelected = false
-    let hookChoiceSelected = false
-    let repositoryPersisted = false
-    let hookPersisted = false
-    let trusted = false
-    let terminalInitialized = false
-    let terminalProbe = ""
-    const trustPoll = setInterval(() => {
-      void readFile(join(codexHome, "config.toml"), "utf8")
-        .then((config) => {
-          repositoryPersisted = config.includes('trust_level = "trusted"')
-          hookPersisted = config.includes("trusted_hash")
-          if (trusted || !repositoryPersisted || !hookPersisted) return
-          trusted = true
-          progress("native-trust-persisted-awaiting-terminal-close")
-          child.kill("SIGTERM")
-        })
-        .catch(() => undefined)
-    }, 100)
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM")
-      const finalScreen = screen
-        .text()
-        .replaceAll(repository, "<repository>")
-        .replaceAll(codexHome, "<codex-home>")
-        .slice(-500)
-      rejectTrust(
-        new Error(
-          `Codex native repository/hook trust review timed out (repository prompt: ${repositorySelected ? "accepted" : "not observed"}; repository trust: ${repositoryPersisted ? "persisted" : "missing"}; hook prompt: ${hookSelected ? "observed" : "not observed"}; trust-all choice: ${hookChoiceSelected ? "confirmed" : "not confirmed"}; hook trust: ${hookPersisted ? "persisted" : "missing"}; screen=${JSON.stringify(finalScreen)})`
-        )
-      )
-    }, 30_000)
-    const observe = (chunk) => {
-      screen.feed(chunk)
-      terminalProbe = `${terminalProbe}${chunk}`.slice(-32)
-      if (!terminalInitialized && terminalProbe.includes("\u001b[6n")) {
-        terminalInitialized = true
-        progress("codex-terminal-query-response-needed")
-      }
-      const rendered = screen.text()
-      if (
-        !repositorySelected &&
-        (rendered.includes("Do you trust the contents of this directory") || rendered.includes("Trust this folder?"))
-      ) {
-        repositorySelected = true
-        progress("native-repository-trust-ready")
-      }
-      if (!hookSelected && rendered.includes("Hooks need review")) {
-        hookSelected = true
-        progress("native-hook-trust-review-ready")
-      }
-      if (hookSelected && !hookChoiceSelected && rendered.includes("› 2. Trust all and continue")) {
-        hookChoiceSelected = true
-        progress("native-hook-trust-all-confirmation-ready")
-      }
-    }
-    child.stdout.setEncoding("utf8")
-    child.stderr.setEncoding("utf8")
-    child.stdout.on("data", observe)
-    child.once("error", (cause) => {
-      clearTimeout(timer)
-      clearInterval(trustPoll)
-      rejectTrust(cause)
-    })
-    child.once("close", (code, signal) => {
-      clearTimeout(timer)
-      clearInterval(trustPoll)
-      if (!trusted)
-        rejectTrust(
-          new Error(
-            `Codex native repository/hook trust review did not persist trust (exit=${code ?? "signal"}; signal=${signal ?? "none"}; repository-prompt=${repositorySelected}; hook-prompt=${hookSelected}; trust-choice=${hookChoiceSelected}; repository-persisted=${repositoryPersisted}; hook-persisted=${hookPersisted})`
-          )
-        )
-      else {
-        progress("native-trust-terminal-closed")
-        resolveTrust()
-      }
-    })
-  })
-
 const temporary = await realpath(await mkdtemp(join(tmpdir(), "review-package-conformance-")))
 const ownedResidents = new Map()
 let separateRuntime
-let testKeychainPath
-let secondaryTestKeychainPath
-let previousDefaultKeychain
 try {
-  if (process.platform === "darwin" && exerciseSecretService) {
-    const previous = await mustRun("security", ["default-keychain", "-d", "user"], { cwd: temporary })
-    previousDefaultKeychain = previous.stdout.trim().replace(/^"|"$/g, "")
-    testKeychainPath = join(temporary, "review-integration.keychain-db")
-    secondaryTestKeychainPath = join(temporary, "review-integration-secondary.keychain-db")
-    await mustRun("security", ["create-keychain", "-p", "review-integration-test", testKeychainPath], {
-      cwd: temporary
-    })
-    await mustRun("security", ["create-keychain", "-p", "review-integration-test", secondaryTestKeychainPath], {
-      cwd: temporary
-    })
-    await mustRun("security", ["default-keychain", "-s", testKeychainPath], { cwd: temporary })
-    await mustRun("security", ["unlock-keychain", "-p", "review-integration-test", testKeychainPath], {
-      cwd: temporary
-    })
-    await mustRun("security", ["unlock-keychain", "-p", "review-integration-test", secondaryTestKeychainPath], {
-      cwd: temporary
-    })
-    await mustRun("security", ["set-keychain-settings", "-lut", "21600", testKeychainPath], { cwd: temporary })
-    await mustRun("security", ["set-keychain-settings", "-lut", "21600", secondaryTestKeychainPath], { cwd: temporary })
-    await mustRun("security", ["list-keychains", "-d", "user", "-s", testKeychainPath, secondaryTestKeychainPath], {
-      cwd: temporary
-    })
-    process.env.REVIEW_TEST_KEYCHAIN_PATH = testKeychainPath
-  }
   progress("pack-and-install")
   const artifacts = join(temporary, "artifacts")
   const installation = join(temporary, "installation")
@@ -942,18 +679,7 @@ try {
     `${process.platform}-${process.arch}`,
     "credential-secret-service"
   )
-  let nativeCredentialHelper = installedCredentialHelper
-  if (process.platform === "darwin" && exerciseSecretService) {
-    // Security's fixture default Keychain belongs to the original OS home.
-    // Restore it only for the actual installed native helper; app homes stay isolated.
-    nativeCredentialHelper = join(temporary, "native-keychain-helper.sh")
-    await writeFile(
-      nativeCredentialHelper,
-      `#!/bin/sh\nHOME=${quote(process.env.HOME ?? homedir())} exec ${quote(installedCredentialHelper)} "$@"\n`,
-      { mode: 0o700 }
-    )
-    env.REVIEW_CREDENTIAL_HELPER = nativeCredentialHelper
-  }
+  const nativeCredentialHelper = installedCredentialHelper
   if (exerciseCredentialFixture) {
     if (process.platform !== "linux") throw new Error("the deterministic credential fixture is Linux-only")
     const helper = join(temporary, "credential-helper.mjs")
@@ -1011,83 +737,11 @@ else if (operation === "get") {
     ) {
       throw new Error("packaged CLI did not reuse the saved credential in a new process")
     }
-    let defaultKeychainIsolation = "not-applicable"
-    if (process.platform === "darwin") {
-      if (secondaryTestKeychainPath === undefined) throw new Error("secondary Keychain fixture is unavailable")
-      const secondaryCredential = `${syntheticCredential}-secondary`
-      const replacementCredential = `${syntheticCredential}-replacement`
-      const addSecondary = await run(
-        "security",
-        [
-          "add-generic-password",
-          "-a",
-          "default",
-          "-s",
-          "dev.typesafe.realtime-review-tool",
-          "-w",
-          secondaryCredential,
-          secondaryTestKeychainPath
-        ],
-        { cwd: temporary, env }
-      )
-      if (addSecondary.code !== 0) throw new Error("secondary Keychain fixture credential could not be created")
-      const helper = nativeCredentialHelper
-      const beforeReplacement = await mustRun(helper, ["get"], { cwd: temporary, env })
-      if (
-        !beforeReplacement.stdout.endsWith(syntheticCredential) ||
-        beforeReplacement.stdout.includes(secondaryCredential)
-      ) {
-        throw new Error("native lookup escaped the selected default Keychain")
-      }
-      const replacement = await mustRun(cli, ["--login", "--credential-stdin"], {
-        cwd: temporary,
-        env,
-        input: `${replacementCredential}\n`
-      })
-      if (parseJson(replacement.stdout, "default Keychain replacement").status !== "stored") {
-        throw new Error("default Keychain replacement failed")
-      }
-      const afterReplacement = await mustRun(helper, ["get"], { cwd: temporary, env })
-      const secondaryAfterReplacement = await mustRun(
-        "security",
-        [
-          "find-generic-password",
-          "-a",
-          "default",
-          "-s",
-          "dev.typesafe.realtime-review-tool",
-          "-w",
-          secondaryTestKeychainPath
-        ],
-        { cwd: temporary, env }
-      )
-      if (
-        !afterReplacement.stdout.endsWith(replacementCredential) ||
-        secondaryAfterReplacement.stdout.trim() !== secondaryCredential
-      ) {
-        throw new Error("native replacement touched a duplicate in another Keychain")
-      }
-      defaultKeychainIsolation = "lookup-and-replacement-passed"
-    }
     credentialEvidence = {
-      status: exerciseCredentialFixture
-        ? "controlled-helper"
-        : process.platform === "darwin"
-          ? "actual-keychain"
-          : "actual-secret-service",
+      status: exerciseCredentialFixture ? "controlled-helper" : "actual-secret-service",
       loginMs: Date.now() - loginStarted,
       separateProcessLookupMs: Date.now() - lookupStarted,
-      defaultKeychainIsolation,
-      ...(process.platform === "darwin" && exerciseSecretService
-        ? {
-            nativeHelper: {
-              sha256: createHash("sha256")
-                .update(await readFile(installedCredentialHelper))
-                .digest("hex"),
-              home: "original-os-home-for-native-helper-child-only"
-            }
-          }
-        : {})
+      defaultKeychainIsolation: "not-applicable"
     }
   }
   await mkdir(codexHome, { recursive: true, mode: 0o700 })
@@ -1561,26 +1215,6 @@ appendFileSync(process.env.INDEPENDENT_HOOK_LOG, JSON.stringify(record) + "\\n")
     ) {
       throw new Error("packaged credential logout did not revoke saved use safely")
     }
-    if (process.platform === "darwin") {
-      if (secondaryTestKeychainPath === undefined) throw new Error("secondary Keychain fixture is unavailable")
-      const secondaryAfterLogout = await mustRun(
-        "security",
-        [
-          "find-generic-password",
-          "-a",
-          "default",
-          "-s",
-          "dev.typesafe.realtime-review-tool",
-          "-w",
-          secondaryTestKeychainPath
-        ],
-        { cwd: temporary, env }
-      )
-      if (secondaryAfterLogout.stdout.trim() !== `${syntheticCredential}-secondary`) {
-        throw new Error("native logout touched a duplicate in another Keychain")
-      }
-      credentialEvidence = { ...credentialEvidence, defaultKeychainIsolation: "lookup-replacement-logout-passed" }
-    }
     const loggedOutSource = "export interface LoggedOut { id: string; destination: string }\n"
     await writeFile(join(repository, "logged-out.ts"), loggedOutSource, { mode: 0o600 })
     const loggedOutEvent = {
@@ -1964,40 +1598,6 @@ appendFileSync(process.env.INDEPENDENT_HOOK_LOG, JSON.stringify(record) + "\\n")
     const installedHelper = nativeCredentialHelper
     if (process.platform === "linux") {
       await mustRun(installedHelper, ["lock"], { cwd: temporary, env })
-    } else if (process.platform === "darwin") {
-      const keychainPath = process.env.REVIEW_TEST_KEYCHAIN_PATH
-      if (keychainPath === undefined) {
-        throw new Error("macOS credential conformance requires REVIEW_TEST_KEYCHAIN_PATH")
-      }
-      await mustRun("security", ["unlock-keychain", "-p", "review-integration-test", keychainPath], {
-        cwd: temporary,
-        env
-      })
-      await mustRun(
-        "security",
-        ["delete-generic-password", "-a", "default", "-s", "dev.typesafe.realtime-review-tool", keychainPath],
-        { cwd: temporary, env }
-      )
-      const restrictedAdd = await run(
-        "security",
-        [
-          "add-generic-password",
-          "-a",
-          "default",
-          "-s",
-          "dev.typesafe.realtime-review-tool",
-          "-w",
-          `${syntheticCredential}-restricted-native-probe`,
-          // An explicit empty trusted-application entry creates an item whose
-          // secret access requires user interaction. The installed helper must
-          // fail that request through kSecUseAuthenticationUIFail.
-          "-T",
-          "",
-          keychainPath
-        ],
-        { cwd: temporary, env }
-      )
-      if (restrictedAdd.code !== 0) throw new Error("restricted native Keychain fixture could not be created")
     } else {
       throw new Error(`native credential conformance is unsupported on ${process.platform}`)
     }
@@ -2166,16 +1766,6 @@ appendFileSync(process.env.INDEPENDENT_HOOK_LOG, JSON.stringify(record) + "\\n")
     [...ownedResidents].map(([directory, commands]) => cleanupOwnedResident(directory, commands))
   )
   const failures = cleanup.filter((result) => result.status === "rejected")
-  if (previousDefaultKeychain !== undefined) {
-    await run("security", ["default-keychain", "-s", previousDefaultKeychain], { cwd: temporary })
-  }
-  if (testKeychainPath !== undefined) {
-    await run("security", ["delete-keychain", testKeychainPath], { cwd: temporary })
-    delete process.env.REVIEW_TEST_KEYCHAIN_PATH
-  }
-  if (secondaryTestKeychainPath !== undefined) {
-    await run("security", ["delete-keychain", secondaryTestKeychainPath], { cwd: temporary })
-  }
   if (failures.length > 0)
     // oxlint-disable-next-line no-unsafe-finally -- Uncertain cleanup must fail the witness and retain its fixture evidence.
     throw new AggregateError(

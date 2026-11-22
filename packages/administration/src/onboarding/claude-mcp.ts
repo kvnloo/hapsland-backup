@@ -11,21 +11,13 @@ import { canonicalJson as canonical } from "./hook-reconciliation.ts"
 
 export interface ClaudeMcpOwnership {
   readonly configuration: string
-  readonly entry: unknown
+  readonly entry: Record<string, unknown>
   readonly skillDigest: string
 }
 
 const object = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 export const claudeSkillDigest = (content: string): string => createHash("sha256").update(content).digest("hex")
-export const validClaudeMcpOwnership = (value: unknown): boolean =>
-  value === undefined ||
-  (object(value) &&
-    typeof value.configuration === "string" &&
-    object(value.entry) &&
-    typeof value.skillDigest === "string" &&
-    /^[a-f0-9]{64}$/.test(value.skillDigest))
-
 export const assertClaudeSkillDirectories = (home: string, skill: string): void => {
   for (let directory = dirname(skill); directory !== home; directory = dirname(directory)) {
     try {
@@ -44,7 +36,7 @@ const configurationObject = (content: string | undefined): Record<string, unknow
   return parsed
 }
 
-const selectedMcpAssets = (target: { readonly runtime: string; readonly entrypoint: string }) => {
+export const selectedClaudeMcpAssets = (target: { readonly runtime: string; readonly entrypoint: string }) => {
   const root = packageRootFromEntrypoint(target.entrypoint)
   const materialized = sourceRuntimeFromEntrypoint(target.entrypoint)
   const cli =
@@ -57,6 +49,7 @@ const selectedMcpAssets = (target: { readonly runtime: string; readonly entrypoi
   const command = commandFromEntrypoint(target.runtime, cli)
   if (command.args.length === 0) accessSync(command.executable, constants.X_OK)
   return {
+    cli,
     entry: { type: "stdio", command: command.executable, args: [...command.args, "mcp"], env: {} },
     skill: readFileSync(join(root, "skills", "hapsland-rule-authoring", "SKILL.md"), "utf8")
   }
@@ -83,7 +76,7 @@ export const planClaudeMcp = (request: {
     (request.owned === undefined || claudeSkillDigest(request.beforeSkill) !== request.owned.skillDigest)
   )
     throw new Error("Claude Hapsland skill was locally modified or is not owned")
-  const desired = request.enabled ? selectedMcpAssets(request.target) : undefined
+  const desired = request.enabled ? selectedClaudeMcpAssets(request.target) : undefined
   let afterConfiguration = request.beforeConfiguration
   if (request.enabled || request.owned !== undefined) {
     const nextServers = { ...servers }

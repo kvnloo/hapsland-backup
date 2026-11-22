@@ -181,6 +181,10 @@ The `--real-codex` path needs authenticated Codex and may invoke it locally.
 The checkout is the test harness; the installed code comes from the registry
 archive.
 
+Darwin native credential qualification is skipped for this release. Ordinary
+package conformance records it as not requested; `--secret-service` refuses on
+Darwin before OS operations. These results make no Keychain lifecycle claim.
+
 A live Jev review-and-repair check uses the exact registry archive too. Run
 the supervised synthetic demo on each platform with a dedicated Codex home,
 after its offline preview and native trust review:
@@ -188,6 +192,16 @@ after its offline preview and native trust review:
 ```sh
 REVIEW_LIVE_CODEX_HOME=/absolute/path/to/dedicated-codex-home npm run conformance:first-review-live -- --live --registry-artifact --expected-sha256=ARCHIVE_SHA256 --supervised-trust --write-evidence
 ```
+
+For a prepared local archive before publication, replace `--registry-artifact`
+with `--archive=/absolute/path/to/reviewed.tgz` and retain its exact SHA-256.
+The runner snapshots and verifies those bytes before installation or reading
+authentication. `REVIEW_LIVE_CODEX_HOME` is a read-only authentication source;
+setup, native interactive trust, and the demo use one private temporary profile
+and isolated Hapsland state. Ordinary setup connects the default rules through
+its displayed proposal digests. The runner removes private session data and
+authentication on completion or failure; uncertain resident shutdown retains
+only its identity state and fails qualification.
 
 The demo declares a ceiling of two Jev requests, 4,096 source bytes, and
 180 seconds. It requires separate consent and records sanitized stage and

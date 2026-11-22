@@ -148,7 +148,7 @@ export const settleEvaluatedReviewUnit = Effect.fn("ResidentRuntime.settleEvalua
     return evaluation
   })
   const evaluation = yield* recordEvaluatedReviewUnit()
-  yield* context.deps.residentRecordDemoTrace(
+  const recordTerminalTrace = context.deps.residentRecordDemoTrace(
     context.job.dispatch.demoBudgetPath,
     context.job.observation.root,
     context.job.observation.advicee,
@@ -197,9 +197,13 @@ export const settleEvaluatedReviewUnit = Effect.fn("ResidentRuntime.settleEvalua
     }
     return false
   })
-  if (yield* settleNonRetainedOutcome()) return
+  if (yield* settleNonRetainedOutcome()) {
+    yield* recordTerminalTrace
+    return
+  }
   yield* residentRetainAdvice(context.deps, context.job, evaluation, context.sequence)
   yield* recordOutcome()
+  yield* recordTerminalTrace
   return
 })
 

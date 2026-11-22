@@ -125,6 +125,41 @@ const authorization = (output: SetupOutput) => ({
   installProposalDigest: output.actions.find((action) => action.code === "approve-installation")?.authorization
     ?.installProposalDigest
 })
+it.skipIf(process.getuid?.() === 0)(
+  "resumes an interrupted initial Claude setup as the approved install operation",
+  () => {
+    const test = fixture()
+    const claudeHome = join(test.root, "claude-home")
+    mkdirSync(claudeHome)
+    mkdirSync(join(claudeHome, ".hapsland"))
+    const claudeExecutable = join(test.root, "claude")
+    writeFileSync(claudeExecutable, "#!/bin/sh\nprintf '2.1.218\\n'\n", { mode: 0o700 })
+    const request = {
+      host: "claude",
+      claudeHome,
+      claudeExecutable,
+      scope: { cwd: test.repository, review: "disabled" },
+      credential: "skip"
+    }
+    const preview = invoke(test, request)
+    chmodSync(claudeHome, 0o500)
+    try {
+      expect(
+        invoke(test, { ...request, ...authorization(preview) }).stages.find((stage) => stage.stage === "installation")
+          ?.status
+      ).toBe("conflict")
+    } finally {
+      chmodSync(claudeHome, 0o700)
+    }
+    const recovery = invoke(test, request)
+    expect(recovery.stages.find((stage) => stage.stage === "installation")?.status).toBe("pending")
+    expect(authorization(recovery).installProposalDigest).toBe(authorization(preview).installProposalDigest)
+    expect(
+      invoke(test, { ...request, ...authorization(recovery) }).stages.find((stage) => stage.stage === "installation")
+        ?.status
+    ).toBe("complete")
+  }
+)
 
 const installDisabled = (test: ReturnType<typeof fixture>) => {
   writeFileSync(join(test.root, "user.jsonc"), '{"version":1,"excludes":["**/*"]}')

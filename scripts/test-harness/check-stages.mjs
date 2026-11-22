@@ -99,6 +99,7 @@ export const precheckStages = [
     "scripts/native-bindings.test.mjs",
     "scripts/native-pi-preflight.test.mjs",
     "scripts/native-process.test.mjs",
+    "scripts/native-codex-trust.test.mjs",
     "scripts/test-harness/bun-coverage.test.mjs"
   ],
   [

@@ -17,13 +17,24 @@ import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { atomicInstallationFile } from "./atomic-installation-file.ts"
+import {
+  ClaudeOwnedRecord as OwnedRecord,
+  ClaudeOwnedIdentity,
+  type ClaudePendingTransition,
+  claudeTransitionHash,
+  claudeOwnedHooks,
+  claudeUnownedSettings,
+  claudeMcpProjection,
+  assertClaudeTransitionSlot,
+  CLAUDE_OWNED_EVENTS
+} from "./claude-installation-transition.ts"
 
 import { withInstallationLock } from "./installation-lock.ts"
 import { IntegrationSelection, resolveIntegrationSelection } from "./integration-selection.ts"
 import {
   assertClaudeSkillDirectories,
   planClaudeMcp,
-  validClaudeMcpOwnership,
+  selectedClaudeMcpAssets,
   type ClaudeMcpOwnership
 } from "./claude-mcp.ts"
 import {
@@ -53,25 +64,6 @@ export interface ClaudeInstallationRequest {
   readonly proposalDigest?: string
   readonly reinstall?: boolean
   readonly integrations?: IntegrationSelection
-}
-
-interface OwnedRecord {
-  readonly version: 1
-  readonly adapter: "claude"
-  readonly home: string
-  readonly hookDigest?: string
-  readonly command?: string
-  readonly integrations?: IntegrationSelection
-  readonly mcp?: ClaudeMcpOwnership
-  readonly implementation?: { readonly executable: string; readonly args: ReadonlyArray<string> }
-  readonly bindingDigest?: string
-  readonly hookGroups?: Record<string, unknown>
-  readonly composed?: {
-    readonly stopDigest: string
-    readonly promptDigest: string
-    readonly subagentStopDigest?: string
-    readonly preToolUseDigest?: string
-  }
 }
 
 const object = (value: unknown): value is JsonObject =>
@@ -112,50 +104,25 @@ const parseObject = (content: string | undefined, label: string): JsonObject => 
   throw new Error(`${label} must contain a JSON object`)
 }
 
-const requiredStringFields = (value: JsonObject, fields: ReadonlyArray<string>): boolean =>
-  fields.every((field) => typeof value[field] === "string")
-const optionalStringField = (value: JsonObject, field: string): boolean =>
-  value[field] === undefined || typeof value[field] === "string"
-const validComposedRecord = (value: unknown): boolean => {
-  if (value === undefined) return true
-  return (
-    object(value) &&
-    requiredStringFields(value, ["stopDigest", "promptDigest"]) &&
-    optionalStringField(value, "subagentStopDigest") &&
-    optionalStringField(value, "preToolUseDigest")
-  )
-}
-const validImplementationRecord = (value: unknown): boolean => {
-  if (value === undefined) return true
-  return (
-    object(value) &&
-    typeof value.executable === "string" &&
-    Array.isArray(value.args) &&
-    value.args.every((arg) => typeof arg === "string")
-  )
-}
 const readRecord = (path: string): OwnedRecord | undefined => {
   const content = file(path)
   if (content === undefined) return undefined
-  const value = parseObject(content, "Claude ownership record")
+  const value = Option.getOrThrowWith(
+    Schema.decodeUnknownOption(OwnedRecord, { onExcessProperty: "error" })(
+      parseObject(content, "Claude ownership record")
+    ),
+    () => new Error("Claude ownership record has an unsupported shape")
+  )
   if (
     value.version !== OWNERSHIP_VERSION ||
     value.adapter !== "claude" ||
-    !requiredStringFields(value, ["home"]) ||
-    !optionalStringField(value, "hookDigest") ||
-    !optionalStringField(value, "command") ||
     (value.integrations === undefined
-      ? !requiredStringFields(value, ["hookDigest", "command"])
-      : !Schema.is(IntegrationSelection)(value.integrations) ||
-        (value.integrations.hooks && !requiredStringFields(value, ["hookDigest", "command"]))) ||
-    !validClaudeMcpOwnership(value.mcp) ||
-    !optionalStringField(value, "bindingDigest") ||
-    !validImplementationRecord(value.implementation) ||
-    !validComposedRecord(value.composed)
+      ? value.hookDigest === undefined || value.command === undefined
+      : value.integrations.hooks && (value.hookDigest === undefined || value.command === undefined))
   ) {
     throw new Error("Claude ownership record has an unsupported shape")
   }
-  return value as unknown as OwnedRecord
+  return value
 }
 
 const countMarker = (value: unknown): number =>
@@ -336,6 +303,14 @@ const readPlanRecord = (request: ClaudeInstallationRequest, input: ClaudeInputs)
     record = readRecord(input.paths.ownership)
   } catch (cause) {
     if (!request.reinstall) throw cause
+    const content = file(input.paths.ownership)
+    let damaged: unknown
+    try {
+      damaged = JSON.parse(content ?? "{}")
+    } catch {
+      if (content?.includes('"pending"')) throw cause
+    }
+    if (object(damaged) && Object.hasOwn(damaged, "pending")) throw cause
   }
   if (record !== undefined && record.home !== input.home)
     throw new Error("Claude ownership record belongs to another home")
@@ -514,7 +489,7 @@ const plannedBindingContent = (
   if (kind === "uninstall") return record?.bindingDigest === undefined ? before : undefined
   return equivalent ? before : (input.binding?.content ?? before)
 }
-const plan = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnType<typeof inputs>) => {
+const planBase = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnType<typeof inputs>) => {
   const beforeRecord = file(input.paths.ownership)
   const previousRecord = readPlanRecord(request, input)
   const integrations = Schema.decodeUnknownSync(IntegrationSelection)(
@@ -554,7 +529,7 @@ const plan = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnType<
         target: input
       })
     : { afterConfiguration: beforeMcp, afterSkill: beforeSkill, ownership: undefined, entry: undefined }
-  const afterRecord =
+  const proposedRecord =
     kind === "uninstall"
       ? undefined
       : encode(
@@ -562,6 +537,13 @@ const plan = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnType<
             ? { ...previousRecord, integrations, mcp: mcp.ownership }
             : installationOwnedRecord(input, integrations, mcp.ownership)
         )
+  const afterRecord =
+    previousRecord !== undefined &&
+    beforeRecord !== undefined &&
+    proposedRecord !== undefined &&
+    canonical(JSON.parse(beforeRecord)) === canonical(JSON.parse(proposedRecord))
+      ? beforeRecord
+      : proposedRecord
   const proposalDigest = digest(
     canonical({
       version: 1,
@@ -582,6 +564,9 @@ const plan = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnType<
     })
   )
   return {
+    transition: undefined,
+    reinstall: request.reinstall === true,
+    beforeIdentity: previousRecord ?? null,
     input,
     beforeSettings,
     beforeRecord,
@@ -605,6 +590,220 @@ const plan = (kind: Kind, request: ClaudeInstallationRequest, input: ReturnType<
       beforeMcp === mcp.afterConfiguration &&
       beforeSkill === mcp.afterSkill
   }
+}
+
+const selectedTarget = (input: ClaudeInputs, mcp: boolean) => {
+  const assets = mcp ? selectedClaudeMcpAssets(input) : undefined
+  const bytesHash = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex")
+  return {
+    runtime: input.runtime,
+    entrypoint: input.entrypoint,
+    assetIdentity: digest(
+      canonical({
+        runtime: bytesHash(input.runtime),
+        entrypoint: bytesHash(input.entrypoint),
+        cli: assets === undefined ? undefined : bytesHash(assets.cli),
+        skill: assets?.skill,
+        entry: assets?.entry
+      })
+    )
+  }
+}
+const identityFromContent = (content: string | undefined): ClaudeOwnedIdentity | null =>
+  content === undefined
+    ? null
+    : Schema.decodeUnknownSync(ClaudeOwnedIdentity, { onExcessProperty: "error" })(JSON.parse(content))
+const transitionSurrounding = (settings: string | undefined, mcp: string | undefined) => ({
+  settings: claudeTransitionHash(claudeUnownedSettings(parseObject(settings, "Claude settings"))),
+  mcp: claudeTransitionHash(claudeMcpProjection(parseObject(mcp, "Claude MCP")).unowned)
+})
+const createTransition = (
+  kind: Kind,
+  next: Omit<ReturnType<typeof planBase>, "transition">
+): ClaudePendingTransition => ({
+  reinstall: next.reinstall,
+  operation: kind,
+  approvedProposalDigest: next.proposalDigest,
+  home: next.input.home,
+  target: kind === "uninstall" ? null : selectedTarget(next.input, next.integrations.mcp),
+  before: next.beforeIdentity,
+  after: identityFromContent(next.afterRecord),
+  slots: {
+    binding: { before: claudeTransitionHash(next.beforeBinding), after: claudeTransitionHash(next.afterBinding) },
+    skill: { before: claudeTransitionHash(next.beforeSkill), after: claudeTransitionHash(next.afterSkill) },
+    mcpEntry: {
+      before: claudeTransitionHash(claudeMcpProjection(parseObject(next.beforeMcp, "Claude MCP")).entry),
+      after: claudeTransitionHash(claudeMcpProjection(parseObject(next.afterMcp, "Claude MCP")).entry)
+    },
+    hooks: Object.fromEntries(
+      (next.managesHooks ? CLAUDE_OWNED_EVENTS : []).map((event) => [
+        event,
+        {
+          before: claudeTransitionHash(claudeOwnedHooks(parseObject(next.beforeSettings, "Claude settings"), event)),
+          after: claudeTransitionHash(claudeOwnedHooks(parseObject(next.afterSettings, "Claude settings"), event))
+        }
+      ])
+    )
+  },
+  surrounding: transitionSurrounding(next.beforeSettings, next.beforeMcp)
+})
+const contentWithProjection = (before: string | undefined, value: JsonObject): string | undefined =>
+  canonical(parseObject(before, "Claude configuration")) === canonical(value) ? before : encode(value)
+const planRecovery = (
+  kind: Kind,
+  request: ClaudeInstallationRequest,
+  input: ClaudeInputs,
+  pending: ClaudePendingTransition
+) => {
+  if (pending.home !== input.home || pending.operation !== kind)
+    throw new Error("Pending Claude transition belongs to another profile or operation")
+  if ((kind === "uninstall") !== (pending.after === null) || (pending.before === null && pending.after === null))
+    throw new Error("Pending Claude transition has inconsistent identities")
+  for (const identity of [pending.before, pending.after]) {
+    if (
+      identity !== null &&
+      (identity.home !== input.home || (identity.mcp !== undefined && identity.mcp.configuration !== input.paths.mcp))
+    )
+      throw new Error("Pending Claude ownership belongs to another profile")
+  }
+  const integrations = pending.after?.integrations ?? pending.before?.integrations ?? { hooks: true, mcp: false }
+  if (request.integrations !== undefined && canonical(request.integrations) !== canonical(integrations))
+    throw new Error("Pending Claude integration selection changed")
+  if (kind !== "uninstall" && canonical(pending.target) !== canonical(selectedTarget(input, integrations.mcp)))
+    throw new Error("Pending Claude selected package assets changed")
+  if (kind === "uninstall" && pending.target !== null) throw new Error("Pending Claude uninstall has an invalid target")
+  const managesHooks = pending.before?.hookDigest !== undefined || pending.after?.hookDigest !== undefined
+  const managesMcp = pending.before?.mcp !== undefined || pending.after?.mcp !== undefined
+  if (managesMcp) assertClaudeSkillDirectories(input.home, input.paths.skill)
+  const beforeRecord = file(input.paths.ownership)
+  const beforeSettings = managesHooks ? file(input.paths.settings) : undefined
+  const beforeBinding = managesHooks ? file(input.paths.binding) : undefined
+  const beforeMcp = managesMcp ? file(input.paths.mcp) : undefined
+  const beforeSkill = managesMcp ? file(input.paths.skill) : undefined
+  const settings = parseObject(beforeSettings, "Claude settings")
+  const mcp = claudeMcpProjection(parseObject(beforeMcp, "Claude MCP"))
+  assertClaudeTransitionSlot("binding", beforeBinding, pending.slots.binding)
+  assertClaudeTransitionSlot("skill", beforeSkill, pending.slots.skill)
+  assertClaudeTransitionSlot("MCP entry", mcp.entry, pending.slots.mcpEntry)
+  if (
+    canonical(Object.keys(pending.slots.hooks).sort()) !==
+    canonical(managesHooks ? [...CLAUDE_OWNED_EVENTS].sort() : [])
+  )
+    throw new Error("Pending Claude hook slots are incomplete")
+  for (const event of CLAUDE_OWNED_EVENTS) {
+    const slot = pending.slots.hooks[event]
+    if (slot !== undefined) assertClaudeTransitionSlot(event, claudeOwnedHooks(settings, event), slot)
+  }
+  const assets = pending.after?.mcp === undefined ? undefined : selectedClaudeMcpAssets(input)
+  const fresh =
+    pending.after === null
+      ? undefined
+      : installationOwnedRecord(
+          input,
+          integrations,
+          assets === undefined
+            ? undefined
+            : { configuration: input.paths.mcp, entry: assets.entry, skillDigest: digest(assets.skill) }
+        )
+  const retainedHooks =
+    pending.slots.binding.before === pending.slots.binding.after &&
+    Object.values(pending.slots.hooks).every((slot) => slot.before === slot.after)
+  if (fresh !== undefined && pending.after !== null) {
+    const expected =
+      retainedHooks && pending.before !== null ? { ...pending.before, integrations, mcp: fresh.mcp } : fresh
+    if (canonical(identityFromContent(encode(expected))) !== canonical(pending.after))
+      throw new Error("Pending Claude desired identity does not match the selected package")
+  }
+  const afterBinding = !managesHooks
+    ? undefined
+    : pending.after?.bindingDigest === undefined
+      ? undefined
+      : retainedHooks
+        ? beforeBinding
+        : input.binding?.content
+  const afterSkill = assets?.skill
+  const afterMcpValue = { ...mcp.unowned }
+  if (pending.after?.mcp !== undefined)
+    afterMcpValue.mcpServers = {
+      ...(object(afterMcpValue.mcpServers) ? afterMcpValue.mcpServers : {}),
+      hapsland: pending.after.mcp.entry
+    }
+  const afterMcp = managesMcp ? contentWithProjection(beforeMcp, afterMcpValue) : undefined
+  let nextSettings = pending.reinstall ? claudeUnownedSettings(settings) : settings
+  for (const event of CLAUDE_OWNED_EVENTS) {
+    const slot = pending.slots.hooks[event]
+    if (
+      slot === undefined ||
+      (!pending.reinstall && claudeTransitionHash(claudeOwnedHooks(settings, event)) === slot.after)
+    )
+      continue
+    const group = pending.after?.hookGroups?.[event]
+    if (event === "PostToolUse") {
+      const current = owned(nextSettings)
+      const next = [...groups(nextSettings)]
+      if (current === undefined) {
+        if (group !== undefined) next.push(group)
+      } else if (group === undefined) next.splice(current.index, 1)
+      else next[current.index] = group
+      nextSettings = withGroups(nextSettings, next)
+    } else {
+      const current = claudeOwnedHooks(nextSettings, event)[0]
+      nextSettings = withComposedGroup(
+        nextSettings,
+        event,
+        group,
+        current === undefined ? undefined : digest(canonical(current)),
+        true,
+        current
+      )
+    }
+  }
+  const afterSettings = managesHooks ? contentWithProjection(beforeSettings, nextSettings) : undefined
+  const desiredSlots = {
+    binding: afterBinding,
+    skill: afterSkill,
+    mcpEntry: claudeMcpProjection(parseObject(afterMcp, "Claude MCP")).entry
+  }
+  for (const name of ["binding", "skill", "mcpEntry"] as const)
+    if (claudeTransitionHash(desiredSlots[name]) !== pending.slots[name].after)
+      throw new Error(`Pending Claude desired ${name} does not match selected assets`)
+  for (const event of CLAUDE_OWNED_EVENTS)
+    if (
+      pending.slots.hooks[event] !== undefined &&
+      claudeTransitionHash(claudeOwnedHooks(nextSettings, event)) !== pending.slots.hooks[event]?.after
+    )
+      throw new Error("Pending Claude desired hooks do not match selected assets")
+  const surrounding = transitionSurrounding(beforeSettings, beforeMcp)
+  const proposalDigest =
+    canonical(surrounding) === canonical(pending.surrounding)
+      ? pending.approvedProposalDigest
+      : digest(canonical({ pending, surrounding }))
+  return {
+    input,
+    beforeSettings,
+    beforeRecord,
+    beforeBinding,
+    afterBinding,
+    afterSettings,
+    afterRecord: pending.after === null ? undefined : encode(pending.after),
+    integrations,
+    managesHooks,
+    managesMcp,
+    beforeMcp,
+    beforeSkill,
+    afterMcp,
+    afterSkill,
+    mcpEntry: pending.after?.mcp?.entry,
+    proposalDigest,
+    noChange: false,
+    beforeIdentity: pending.before,
+    reinstall: pending.reinstall,
+    transition: { ...pending, approvedProposalDigest: proposalDigest, surrounding }
+  }
+}
+const plan = (kind: Kind, request: ClaudeInstallationRequest, input: ClaudeInputs) => {
+  const pending = readPlanRecord(request, input)?.pending
+  return pending === undefined ? planBase(kind, request, input) : planRecovery(kind, request, input, pending)
 }
 
 const resultError = (operation: string, cause: unknown, home?: string) => ({
@@ -703,71 +902,69 @@ const assertClaudeFiles = (
 ): void => {
   if (file(first) !== firstExpected || file(second) !== secondExpected) throw new Error(message)
 }
-const rollbackOwnedRecord = (input: ClaudeInputs, next: ReturnType<typeof plan>): void => {
-  try {
-    if (
-      (!next.managesHooks || file(input.paths.settings) === next.beforeSettings) &&
-      (!next.managesMcp ||
-        (file(input.paths.mcp) === next.beforeMcp && file(input.paths.skill) === next.beforeSkill)) &&
-      file(input.paths.ownership) === next.afterRecord
+const commitClaudePlan = (input: ClaudeInputs, next: ReturnType<typeof plan>, kind: Kind): void => {
+  // Publish pending custody before assets; publish stable ownership only after all assets match.
+  if (file(input.paths.ownership) !== next.beforeRecord) throw new Error("Claude ownership changed since preview")
+  if (next.managesHooks) {
+    assertClaudeFiles(
+      input.paths.settings,
+      next.beforeSettings,
+      input.paths.binding,
+      next.beforeBinding,
+      "Claude hook configuration changed during apply; obtain a fresh preview"
     )
-      atomicInstallationFile(input.paths.ownership, next.beforeRecord)
-  } catch {
-    /* Preserve primary failure; inspection exposes partial state. */
   }
-}
-const rollbackOwnedBinding = (input: ClaudeInputs, next: ReturnType<typeof plan>): void => {
-  try {
-    if (
-      file(input.paths.settings) === next.beforeSettings &&
-      file(input.paths.binding) === next.afterBinding &&
-      next.beforeBinding !== next.afterBinding
+  if (next.managesMcp) {
+    assertClaudeFiles(
+      input.paths.mcp,
+      next.beforeMcp,
+      input.paths.skill,
+      next.beforeSkill,
+      "Claude MCP configuration or skill changed during apply; obtain a fresh preview"
     )
-      atomicInstallationFile(input.paths.binding, next.beforeBinding)
-  } catch {
-    /* Inspection reports partial state. */
   }
-}
-const commitClaudePlan = (input: ClaudeInputs, next: ReturnType<typeof plan>): void => {
-  // Settings is applied last; each owned file is checked before mutation.
-  try {
-    if (file(input.paths.ownership) !== next.beforeRecord) throw new Error("Claude ownership changed since preview")
-    if (next.managesHooks) {
-      assertClaudeFiles(
-        input.paths.settings,
-        next.beforeSettings,
-        input.paths.binding,
-        next.beforeBinding,
-        "Claude hook configuration changed during apply; obtain a fresh preview"
-      )
-    }
-    if (next.managesMcp) {
-      assertClaudeFiles(
-        input.paths.mcp,
-        next.beforeMcp,
-        input.paths.skill,
-        next.beforeSkill,
-        "Claude MCP configuration or skill changed during apply; obtain a fresh preview"
-      )
-    }
-    if (next.beforeRecord !== next.afterRecord) atomicInstallationFile(input.paths.ownership, next.afterRecord)
-    if (next.managesHooks)
-      assertClaudeFiles(
-        input.paths.settings,
-        next.beforeSettings,
-        input.paths.ownership,
-        next.afterRecord,
-        "Claude configuration changed during apply; current settings were preserved"
-      )
-    if (next.beforeBinding !== next.afterBinding) atomicInstallationFile(input.paths.binding, next.afterBinding)
-    if (next.beforeSkill !== next.afterSkill) atomicInstallationFile(input.paths.skill, next.afterSkill)
-    if (next.beforeMcp !== next.afterMcp) atomicInstallationFile(input.paths.mcp, next.afterMcp)
-    if (next.beforeSettings !== next.afterSettings) atomicInstallationFile(input.paths.settings, next.afterSettings)
-  } catch (cause) {
-    rollbackOwnedBinding(input, next)
-    rollbackOwnedRecord(input, next)
-    throw cause
+  const pending = next.transition ?? createTransition(kind, next)
+  const identity = pending.before ?? pending.after
+  if (identity === null) throw new Error("Claude transition has no owned identity")
+  const pendingRecord = encode({ ...identity, pending })
+  atomicInstallationFile(input.paths.ownership, pendingRecord)
+  if (next.managesHooks)
+    assertClaudeFiles(
+      input.paths.settings,
+      next.beforeSettings,
+      input.paths.ownership,
+      pendingRecord,
+      "Claude configuration changed during apply; current settings were preserved"
+    )
+  const writeExpected = (path: string, before: string | undefined, after: string | undefined) => {
+    if (before === after) return
+    if (file(path) !== before || file(input.paths.ownership) !== pendingRecord)
+      throw new Error("Claude configuration changed during transition; obtain a fresh recovery preview")
+    atomicInstallationFile(path, after)
   }
+  writeExpected(input.paths.binding, next.beforeBinding, next.afterBinding)
+  writeExpected(input.paths.skill, next.beforeSkill, next.afterSkill)
+  writeExpected(input.paths.mcp, next.beforeMcp, next.afterMcp)
+  writeExpected(input.paths.settings, next.beforeSettings, next.afterSettings)
+  if (next.managesHooks)
+    assertClaudeFiles(
+      input.paths.settings,
+      next.afterSettings,
+      input.paths.binding,
+      next.afterBinding,
+      "Claude hook assets changed during transition"
+    )
+  if (next.managesMcp)
+    assertClaudeFiles(
+      input.paths.mcp,
+      next.afterMcp,
+      input.paths.skill,
+      next.afterSkill,
+      "Claude MCP assets changed during transition"
+    )
+  if (file(input.paths.ownership) !== pendingRecord)
+    throw new Error("Claude pending ownership changed during transition")
+  atomicInstallationFile(input.paths.ownership, next.afterRecord)
 }
 const nonemptyInstallationError = (cause: Error): string =>
   cause.message.length > 0 ? cause.message : "installation failed"
@@ -793,7 +990,7 @@ const apply = Effect.fn("ClaudeInstallation.apply")(function* (kind: Kind, reque
               error: { message: "Claude settings changed since preview; obtain a new proposal" }
             }
           if (next.noChange) return { version: 1 as const, operation, status: "already-current" as const }
-          commitClaudePlan(input, next)
+          commitClaudePlan(input, next, kind)
           return {
             version: 1 as const,
             operation,
@@ -835,6 +1032,22 @@ export const previewClaudeUpdate = Effect.fn("ClaudeInstallation.previewUpdate")
 export const updateClaudeIntegration = Effect.fn("ClaudeInstallation.update")((request: ClaudeInstallationRequest) =>
   apply("update", request)
 )
+/** Setup resumes the recorded operation; presence alone does not establish a completed installation. */
+export const claudeSetupOperation = Effect.fn("ClaudeInstallation.setupOperation")(function* (
+  request: ClaudeInstallationRequest
+) {
+  const input = yield* resolveInputs(request)
+  const record = readRecord(input.paths.ownership)
+  if (record?.pending?.operation === "uninstall")
+    return yield* Effect.fail(
+      new ClaudeInstallationError({ reason: "Complete the pending Claude uninstall before setup" })
+    )
+  if (record?.pending !== undefined) return record.pending.operation
+  const settings = file(input.paths.settings) ?? ""
+  return record !== undefined || settings.includes(MARKER) || settings.includes(COMPOSED_MARKER)
+    ? ("update" as const)
+    : ("install" as const)
+})
 export const uninstallClaudeIntegration = Effect.fn("ClaudeInstallation.uninstall")(function* (
   request: ClaudeInstallationRequest
 ) {

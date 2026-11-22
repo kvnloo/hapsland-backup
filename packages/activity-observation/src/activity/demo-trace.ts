@@ -72,10 +72,7 @@ export const recordDemoTraceEffect = (
     const path = yield* fs.makeTempFile({ directory, prefix: "trace-", suffix: ".json" })
     yield* fs.chmod(path, 0o600)
     yield* fs.writeFileString(path, `${JSON.stringify(trace)}\n`)
-  }).pipe(
-    Effect.catch(() => Effect.void),
-    Effect.interruptible
-  )
+  }).pipe(Effect.catch(() => Effect.void))
 export type DemoTraceRecorder = (...args: Parameters<typeof recordDemoTraceEffect>) => Effect.Effect<void>
 const readTraceEntry = (path: string, sessionId: string): readonly Trace[] => {
   try {

@@ -65,6 +65,7 @@ const liveRequest = (value: Extract<Preview, { status: "preview" }>) => ({
 const completed: DemoExecution = {
   host: { completed: true, version: "codex-cli 0.155.1", durationMs: 700 },
   review: {
+    findingRepairChainObserved: true,
     providerCalls: 2,
     submission: "submitted",
     findings: 1,
@@ -192,8 +193,8 @@ describe("installed-product first-review demo", async () => {
         correlatedHostEvidence({
           ...observed,
           hostEvents: finalMessages.map((text) => ({ type: "item.completed", item: { type: "agent_message", text } }))
-        }).modelReaction.status
-      ).toBe("not-observed")
+        })
+      ).toMatchObject({ modelReaction: { status: "not-observed" }, followUp: { status: "completed" } })
     }
     expect(
       correlatedHostEvidence({
@@ -238,6 +239,22 @@ describe("installed-product first-review demo", async () => {
       })
     ).toMatchObject({ modelReaction: { status: "observed" }, followUp: { status: "completed" } })
     expect(correlatedHostEvidence({ ...observed, repairValidated: false }).followUp.status).toBe("not-observed")
+    expect(correlatedHostEvidence({ ...observed, repairValidated: false }).modelReaction.status).toBe("observed")
+    const crossed = correlatedHostEvidence({
+      ...observed,
+      trace: [
+        ...trace.slice(0, 2),
+        { ...trace[2]!, feedbackDigests: [demoFeedbackDigest("earlier feedback")] },
+        ...trace.slice(3),
+        { ...trace[2]!, at: 6, sourceHash: repaired },
+        { ...trace[3]!, at: 7, sourceHash: "c".repeat(64) }
+      ]
+    })
+    expect(crossed).toMatchObject({
+      modelReaction: { status: "observed" },
+      followUp: { status: "completed" },
+      findingRepairChainObserved: false
+    })
     expect(
       correlatedHostEvidence({
         ...observed,
@@ -257,6 +274,7 @@ describe("installed-product first-review demo", async () => {
         findingSubmitted: true
       })
     ).toEqual({
+      findingRepairChainObserved: false,
       modelReaction: { status: "unavailable", reason: "host-model-reaction-not-instrumented" },
       followUp: { status: "unavailable", reason: "post-repair-review-not-instrumented" }
     })
@@ -589,6 +607,7 @@ describe("installed-product first-review demo", async () => {
           Effect.sync<DemoExecution>(() => ({
             host: { completed: true, version: "codex-cli 0.155.1", durationMs: 900 },
             review: {
+              findingRepairChainObserved: false,
               providerCalls: 3,
               submission: "none",
               findings: 0,

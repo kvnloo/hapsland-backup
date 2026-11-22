@@ -8,8 +8,50 @@ export const requireCleanInstallationPreview = (preview) => {
   return preview.proposal.digest
 }
 
-export const requireCreatedInstallation = (result) => {
-  if (result?.status !== "installed") {
-    throw new Error("live milestone did not create a new scoped installation")
+export const setupAuthorization = (preview) => {
+  const action = (code) => preview?.actions?.find((item) => item.code === code)?.authorization
+  const installProposalDigest = action("approve-installation")?.installProposalDigest
+  const rulesProposalDigest = action("approve-default-rules")?.rulesProposalDigest
+  if (
+    ![installProposalDigest, rulesProposalDigest].every(
+      (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
+    )
+  )
+    throw new Error("Ordinary setup did not disclose exact installation and default rule approvals")
+  return { installProposalDigest, rulesProposalDigest }
+}
+export const requireCreatedSetup = (result) => {
+  for (const stage of ["installation", "rules", "repository", "credential"]) {
+    if (result?.stages?.find((item) => item.stage === stage)?.status !== "complete")
+      throw new Error(`Ordinary setup did not complete ${stage}`)
   }
 }
+export const firstReviewLiveEnvironment = (inherited, owned, sandboxBypass = false) => ({
+  ...Object.fromEntries(
+    [
+      "PATH",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+      "TZ",
+      "TMPDIR",
+      "TMP",
+      "TEMP",
+      "SystemRoot",
+      "SYSTEMROOT",
+      "COMSPEC",
+      "PATHEXT",
+      "SSL_CERT_FILE",
+      "SSL_CERT_DIR",
+      "NODE_EXTRA_CA_CERTS",
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "NO_PROXY",
+      "TYPESAFE_API_KEY",
+      "OPENAI_API_KEY"
+    ].flatMap((key) => (typeof inherited[key] === "string" ? [[key, inherited[key]]] : []))
+  ),
+  ...owned,
+  ...(sandboxBypass ? { REVIEW_DEMO_TEST_SANDBOX_BYPASS: "1" } : {})
+})

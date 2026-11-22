@@ -1,53 +1,50 @@
-import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
-import { createInterface } from "node:readline/promises"
-import { requireCleanInstallationPreview, requireCreatedInstallation } from "./first-review-live-runner-policy.mjs"
+import { fileURLToPath } from "node:url"
+import {
+  requireCleanInstallationPreview,
+  setupAuthorization,
+  requireCreatedSetup,
+  firstReviewLiveEnvironment
+} from "./first-review-live-runner-policy.mjs"
 import { stopScopedResident } from "./first-review-resident-cleanup.mjs"
+import { executeNative } from "./native-process.mjs"
+import { establishNativeTrust } from "./native-codex-trust.mjs"
 
-const projectRoot = resolve(new URL("../", import.meta.url).pathname)
+const projectRoot = fileURLToPath(new URL("../", import.meta.url))
 const explicitLive = process.argv.includes("--live")
 const writeEvidence = process.argv.includes("--write-evidence")
 const registryArtifact = process.argv.includes("--registry-artifact")
+const suppliedArchive = process.argv.find((argument) => argument.startsWith("--archive="))?.slice("--archive=".length)
+if (suppliedArchive !== undefined && registryArtifact)
+  throw new Error("Select one reviewed local archive or registry artifact")
 const releaseManifest = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"))
 const expectedSha256 = process.argv
   .find((argument) => argument.startsWith("--expected-sha256="))
   ?.slice("--expected-sha256=".length)
-if (registryArtifact && !/^[0-9a-f]{64}$/.test(expectedSha256 ?? "")) {
-  throw new Error("registry live milestone requires --expected-sha256=REVIEWED_ARCHIVE_SHA256")
+if (explicitLive && (!/^[0-9a-f]{64}$/.test(expectedSha256 ?? "") || (!registryArtifact && !suppliedArchive))) {
+  throw new Error(
+    "live milestone requires --archive=PATH or --registry-artifact and --expected-sha256=REVIEWED_ARCHIVE_SHA256"
+  )
 }
 const supervisedTrust = process.argv.includes("--supervised-trust")
 const testSandboxBypass = process.argv.includes("--test-sandbox-bypass")
-const codexHome = process.env.REVIEW_LIVE_CODEX_HOME
+const sourceCodexHome = process.env.REVIEW_LIVE_CODEX_HOME
+let interrupted = false
+let cleaningUp = false
 
-const run = (command, args, options = {}) =>
-  new Promise((resolveRun, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd ?? projectRoot,
-      env: options.env ?? process.env,
-      stdio: ["pipe", "pipe", "pipe"]
-    })
-    let stdout = ""
-    let stderr = ""
-    const timer = setTimeout(() => child.kill("SIGTERM"), options.timeoutMs ?? 10_000)
-    child.stdout.setEncoding("utf8")
-    child.stderr.setEncoding("utf8")
-    child.stdout.on("data", (value) => {
-      stdout += value
-    })
-    child.stderr.on("data", (value) => {
-      stderr += value
-    })
-    child.once("error", reject)
-    child.once("close", (code, signal) => {
-      clearTimeout(timer)
-      resolveRun({ code, signal, stdout, stderr })
-    })
-    if (options.input === undefined) child.stdin.end()
-    else child.stdin.end(`${JSON.stringify(options.input)}\n`)
+const run = (command, args, options = {}) => {
+  if (interrupted && !cleaningUp) throw new Error("Live fixture interrupted")
+  return executeNative(command, args, {
+    cwd: options.cwd ?? projectRoot,
+    env: options.env ?? process.env,
+    timeout: options.timeoutMs ?? 10_000,
+    maxOutputBytes: 8 * 1024 * 1024,
+    ...(options.input === undefined ? {} : { input: `${JSON.stringify(options.input)}\n` })
   })
+}
 
 const requireExit = (result, label, expected = [0]) => {
   if (!expected.includes(result.code)) {
@@ -79,21 +76,37 @@ if (!explicitLive) {
   )
   process.exit(0)
 }
-if (codexHome === undefined) {
+if (sourceCodexHome === undefined) {
   throw new Error("live milestone requires REVIEW_LIVE_CODEX_HOME")
 }
 
-const runnerRoot = await mkdtemp(join(tmpdir(), "review-first-live-runner-"))
+const runnerRoot = await realpath(await mkdtemp(join(tmpdir(), "review-first-live-runner-")))
+const onInterrupt = () => {
+  interrupted = true
+}
+process.on("SIGINT", onInterrupt)
+process.on("SIGTERM", onInterrupt)
+const codexHome = join(runnerRoot, "codex")
+const appHome = join(runnerRoot, "home")
+const repository = join(runnerRoot, "repository")
 const installPrefix = join(runnerRoot, "installed-release")
 const stateRoot = join(runnerRoot, "state")
-const runnerEnv = {
-  ...process.env,
-  ...(testSandboxBypass ? { REVIEW_DEMO_TEST_SANDBOX_BYPASS: "1" } : {}),
-  REVIEW_STATE_PATH: join(stateRoot, "consent"),
-  REVIEW_ACTIVITY_PATH: join(stateRoot, "activity"),
-  REVIEW_DEMO_STATE_PATH: join(stateRoot, "demo.json"),
-  REVIEW_RESIDENT_DIR: join(stateRoot, "resident")
-}
+const runnerEnv = firstReviewLiveEnvironment(
+  process.env,
+  {
+    HOME: appHome,
+    CODEX_HOME: codexHome,
+    XDG_CONFIG_HOME: join(appHome, ".config"),
+    XDG_DATA_HOME: join(appHome, ".local", "share"),
+    REVIEW_USER_CONFIG_PATH: join(runnerRoot, "user.jsonc"),
+    REVIEW_CREDENTIAL_STATE_PATH: join(stateRoot, "credentials"),
+    REVIEW_STATE_PATH: join(stateRoot, "consent"),
+    REVIEW_ACTIVITY_PATH: join(stateRoot, "activity"),
+    REVIEW_DEMO_STATE_PATH: join(stateRoot, "demo.json"),
+    REVIEW_RESIDENT_DIR: join(stateRoot, "resident")
+  },
+  testSandboxBypass
+)
 
 let cli
 let preview
@@ -101,6 +114,7 @@ let live
 let artifactSha256
 let codexVersion
 let installed = false
+let setup
 
 const invoke = async (input, timeoutMs = 10_000, expected = [0]) => {
   const result = requireExit(
@@ -112,35 +126,47 @@ const invoke = async (input, timeoutMs = 10_000, expected = [0]) => {
 }
 
 try {
-  await mkdir(installPrefix, { recursive: true })
-  const packResult = requireExit(
-    await run(
-      "npm",
-      registryArtifact
-        ? [
-            "pack",
-            `${releaseManifest.name}@${releaseManifest.version}`,
-            "--json",
-            "--ignore-scripts=true",
-            "--registry=https://registry.npmjs.org/",
-            "--pack-destination",
-            runnerRoot
-          ]
-        : ["pack", "--json", "--pack-destination", runnerRoot],
-      { timeoutMs: 120_000 }
-    ),
-    "npm pack"
+  await mkdir(codexHome, { recursive: true, mode: 0o700 })
+  await mkdir(appHome, { recursive: true, mode: 0o700 })
+  await mkdir(repository, { recursive: true, mode: 0o700 })
+  requireExit(
+    await run("git", ["init", "--quiet", repository], { env: runnerEnv }),
+    "fixture repository initialization"
   )
-  const packEntries = parseJson(packResult, "npm pack")
-  const tarballName = packEntries[0]?.filename
-  if (typeof tarballName !== "string") throw new Error("npm pack did not identify its tarball")
-  const tarballPath = join(runnerRoot, tarballName)
-  artifactSha256 = createHash("sha256")
-    .update(await readFile(tarballPath))
-    .digest("hex")
-  if (registryArtifact && artifactSha256 !== expectedSha256) {
-    throw new Error(`registry archive SHA-256 differs from reviewed artifact: ${artifactSha256}`)
+  await mkdir(installPrefix, { recursive: true })
+  let tarballPath = suppliedArchive === undefined ? undefined : await realpath(resolve(suppliedArchive))
+  if (registryArtifact) {
+    const packResult = requireExit(
+      await run(
+        "npm",
+        [
+          "pack",
+          `${releaseManifest.name}@${releaseManifest.version}`,
+          "--json",
+          "--ignore-scripts=true",
+          "--registry=https://registry.npmjs.org/",
+          "--pack-destination",
+          runnerRoot
+        ],
+        { timeoutMs: 120_000 }
+      ),
+      "npm pack"
+    )
+    const packEntries = parseJson(packResult, "npm pack")
+    const tarballName = packEntries[0]?.filename
+    if (typeof tarballName !== "string") throw new Error("npm pack did not identify its tarball")
+    tarballPath = join(runnerRoot, tarballName)
   }
+  if (tarballPath === undefined) throw new Error("Reviewed archive is unavailable")
+  const archiveBytes = await readFile(tarballPath)
+  artifactSha256 = createHash("sha256").update(archiveBytes).digest("hex")
+  if (artifactSha256 !== expectedSha256) {
+    throw new Error("archive SHA-256 differs from reviewed artifact")
+  }
+  tarballPath = join(runnerRoot, "reviewed.tgz")
+  await writeFile(tarballPath, archiveBytes, { mode: 0o600, flag: "wx" })
+  // Verify exact private archive bytes before opening the read-only authentication source.
+  await writeFile(join(codexHome, "auth.json"), await readFile(join(sourceCodexHome, "auth.json")), { mode: 0o600 })
 
   requireExit(
     await run(
@@ -173,7 +199,10 @@ try {
     throw new Error("installed CLI package identity did not match the packed release")
   }
 
-  const versionResult = requireExit(await run("codex", ["--version"], { timeoutMs: 10_000 }), "codex --version")
+  const versionResult = requireExit(
+    await run("codex", ["--version"], { env: runnerEnv, timeoutMs: 10_000 }),
+    "codex --version"
+  )
   codexVersion = versionResult.stdout.trim()
   if (codexVersion.length === 0) throw new Error("codex --version returned an empty version")
 
@@ -185,16 +214,29 @@ try {
     "installed CLI install preview"
   )
   const installPreview = parseJson(installPreviewRun, "installed CLI install preview")
-  const installDigest = requireCleanInstallationPreview(installPreview)
-  const installRun = requireExit(
-    await run(cli, ["--install"], {
-      env: runnerEnv,
-      input: { version: 1, operation: "install", codexHome, codexExecutable: "codex", proposalDigest: installDigest }
-    }),
-    "installed CLI install"
+  requireCleanInstallationPreview(installPreview)
+  const setupRequest = {
+    version: 1,
+    operation: "setup",
+    host: "codex",
+    codexHome,
+    codexExecutable: "codex",
+    credential: "environment",
+    scope: { cwd: repository, review: "enabled" }
+  }
+  const setupPreviewRun = requireExit(
+    await run(cli, ["--setup"], { env: runnerEnv, input: setupRequest }),
+    "ordinary setup preview",
+    [0, 6]
   )
-  const installResult = parseJson(installRun, "installed CLI install")
-  requireCreatedInstallation(installResult)
+  const approvals = setupAuthorization(parseJson(setupPreviewRun, "ordinary setup preview"))
+  const installRun = requireExit(
+    await run(cli, ["--setup"], { env: runnerEnv, input: { ...setupRequest, ...approvals } }),
+    "installed CLI install",
+    [0, 6]
+  )
+  setup = parseJson(installRun, "ordinary setup apply")
+  requireCreatedSetup(setup)
   installed = true
 
   preview = await invoke({ version: 1, operation: "demo", selection: "preview", codexHome, codexExecutable: "codex" })
@@ -209,30 +251,9 @@ try {
   }
 
   if (supervisedTrust) {
-    if (!process.stdin.isTTY) throw new Error("supervised native trust requires a terminal")
     const disposableRoot = preview.output.demo?.disposableRoot
     if (typeof disposableRoot !== "string") throw new Error("demo preview omitted its disposable root")
-    const trustBefore = await readFile(join(codexHome, "config.toml"), "utf8").catch(() => "")
-    process.stderr.write(
-      `Complete Codex's native repository and hook trust review in another terminal:\n  CODEX_HOME=${codexHome} codex --no-alt-screen -C ${disposableRoot}\nThen press Enter here to run the declared live demo, or Ctrl-C to cancel.\n`
-    )
-    const terminal = createInterface({ input: process.stdin, output: process.stderr })
-    try {
-      await terminal.question("Native trust completed? ")
-    } finally {
-      terminal.close()
-    }
-    const trustedConfig = await readFile(join(codexHome, "config.toml"), "utf8")
-    const hookHash = /trusted_hash = "(sha256:[0-9a-f]{64})"/u.exec(trustedConfig)?.[1]
-    const previousHookHash = /trusted_hash = "(sha256:[0-9a-f]{64})"/u.exec(trustBefore)?.[1]
-    if (
-      !trustedConfig.includes(`[projects."${disposableRoot}"]`) ||
-      !trustedConfig.includes(`[hooks.state."${join(codexHome, "hooks.json")}:post_tool_use:0:0"]`) ||
-      hookHash === undefined ||
-      hookHash === previousHookHash
-    ) {
-      throw new Error("native repository and exact hook-definition trust were not persisted")
-    }
+    await establishNativeTrust(codexHome, disposableRoot, runnerEnv)
   }
 
   live = await invoke(
@@ -249,6 +270,7 @@ try {
     [0, 6]
   )
 } finally {
+  cleaningUp = true
   let cleanupFailure
   const retainCleanupFailure = (cause) => {
     cleanupFailure ??= cause
@@ -286,7 +308,17 @@ try {
     })().catch(retainCleanupFailure)
   }
   await stopScopedResident(stateRoot).catch(retainCleanupFailure)
-  await rm(runnerRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(retainCleanupFailure)
+  for (const directory of [codexHome, appHome, installPrefix, repository])
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(retainCleanupFailure)
+  for (const name of await readdir(stateRoot).catch(() => []))
+    if (name !== "resident")
+      await rm(join(stateRoot, name), { recursive: true, force: true }).catch(retainCleanupFailure)
+  for (const name of await readdir(runnerRoot).catch(() => []))
+    if (name !== "state") await rm(join(runnerRoot, name), { recursive: true, force: true }).catch(retainCleanupFailure)
+  if (cleanupFailure === undefined)
+    await rm(runnerRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(retainCleanupFailure)
+  process.removeListener("SIGINT", onInterrupt)
+  process.removeListener("SIGTERM", onInterrupt)
   // oxlint-disable-next-line no-unsafe-finally -- Uncertain cleanup must fail the witness and retain its fixture evidence.
   if (cleanupFailure !== undefined) throw cleanupFailure
 }
@@ -303,7 +335,7 @@ const evidence = {
     architecture: process.arch
   },
   package: {
-    source: registryArtifact ? "npm-registry-installation" : "runner-packed-release-installation",
+    source: registryArtifact ? "npm-registry-installation" : "reviewed-local-archive-installation",
     artifactSha256,
     cliResolvedInsideInstalledArtifact: true
   },
@@ -314,11 +346,16 @@ const evidence = {
     repairPrescribed: preview.output.demo.disclosure.repairPrescribed === true,
     exactDisposableSelection: typeof preview.output.authorization.selectionDigest === "string",
     supervisedNativeTrust: supervisedTrust,
-    hostSandboxMode: testSandboxBypass ? "test-bypass" : "workspace-write",
-    hostModel: process.env.REVIEW_DEMO_TEST_CODEX_MODEL ?? "Codex default",
+    hostSandboxMode: runnerEnv.REVIEW_DEMO_TEST_SANDBOX_BYPASS === "1" ? "test-bypass" : "workspace-write",
+    hostModel: "Codex default",
     budgets: preview.output.budget
   },
-  setup: preview.output.setup,
+  setup: {
+    ordinaryDefaults: true,
+    status: setup?.status,
+    installation: setup?.stages?.find((stage) => stage.stage === "installation")?.status,
+    rules: setup?.stages?.find((stage) => stage.stage === "rules")?.status
+  },
   reviewLatencyMs: result?.reviewLatencyMs ?? null,
   status: result?.status ?? "incomplete",
   stages: result?.evidence ?? {

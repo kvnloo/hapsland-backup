@@ -1,13 +1,13 @@
 import { nativeDirectoryInventory, nativeToolSelection, nativeToolNames } from "./native-toolchain-inputs.mjs"
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, symlinkSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, symlinkSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import { fileEvidence } from "./compiler-evidence.mjs"
 import { checkNativeReceipt, nativeReceiptDigest } from "./native-task-receipt.mjs"
 const fixture = (t) => {
-  const root = mkdtempSync(resolve(tmpdir(), "hapsland-native-cache-"))
+  const root = realpathSync(mkdtempSync(resolve(tmpdir(), "hapsland-native-cache-")))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   for (const name of ["source.c", "header.h", "lib.so", "cc", "tool.so", "ld.cache", "output"])
     writeFileSync(resolve(root, name), name)

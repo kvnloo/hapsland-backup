@@ -75,6 +75,7 @@ export type DemoExecution = {
     readonly stderrBytes?: number
   }
   readonly review: {
+    readonly findingRepairChainObserved: boolean
     readonly providerCalls: number
     readonly sourceBytes?: number
     readonly submission: "submitted" | "none" | "unavailable"
@@ -332,6 +333,7 @@ export const uninstrumentedHostEvidence = (_observations: {
   readonly terminalReviews: number
   readonly findingSubmitted: boolean
 }) => ({
+  findingRepairChainObserved: false,
   modelReaction: { status: "unavailable" as const, reason: "host-model-reaction-not-instrumented" as const },
   followUp: { status: "unavailable" as const, reason: "post-repair-review-not-instrumented" as const }
 })
@@ -396,7 +398,7 @@ const decodeReactionReport = (message: string | undefined) => {
 }
 export const correlatedHostEvidence = (
   observations: DemoCorrelationObservations
-): Pick<DemoExecution["review"], "modelReaction" | "followUp"> => {
+): Pick<DemoExecution["review"], "modelReaction" | "followUp" | "findingRepairChainObserved"> => {
   const report = decodeReactionReport(finalHostMessage(observations.hostEvents))
   const quote = report?.reaction.kind === "acted-on-feedback" ? report.reaction.quote : undefined
   const delivery =
@@ -413,9 +415,17 @@ export const correlatedHostEvidence = (
             entry.kind === "edit" &&
             entry.editedPath === "session.ts" &&
             entry.at > delivery.at &&
-            entry.sourceHash === observations.finalSourceHash &&
             entry.sourceHash !== delivery.sourceHash
         )
+  const validatedEdit = observations.trace.find(
+    (entry) =>
+      entry.kind === "edit" &&
+      entry.editedPath === "session.ts" &&
+      entry.sourceHash === observations.finalSourceHash &&
+      observations.trace.some(
+        (previous) => previous.kind === "delivery" && previous.at < entry.at && previous.sourceHash !== entry.sourceHash
+      )
+  )
   const matchesFeedback =
     observations.finalReportAfterEdits &&
     report?.reaction.kind === "acted-on-feedback" &&
@@ -424,9 +434,15 @@ export const correlatedHostEvidence = (
     modelReaction: findingReaction(
       delivery ?? observations.trace.find((entry) => entry.kind === "delivery"),
       reactionEdit,
-      matchesFeedback && observations.repairValidated
+      matchesFeedback
     ),
-    followUp: postRepairReview(observations, reactionEdit)
+    followUp: postRepairReview(observations, validatedEdit),
+    findingRepairChainObserved:
+      matchesFeedback &&
+      delivery !== undefined &&
+      validatedEdit !== undefined &&
+      validatedEdit.at > delivery.at &&
+      postRepairReview(observations, validatedEdit).status === "completed"
   }
 }
 
@@ -499,7 +515,7 @@ const demoReviewEvidence = (
   activity: ReturnType<typeof readActivity> | undefined,
   usage: ReturnType<typeof readDemoBudgetUsage>,
   terminalReviews: number,
-  correlation: Pick<DemoExecution["review"], "modelReaction" | "followUp">
+  correlation: Pick<DemoExecution["review"], "modelReaction" | "followUp" | "findingRepairChainObserved">
 ): DemoExecution["review"] => {
   return {
     providerCalls: usage?.providerCalls ?? terminalReviews,
@@ -508,6 +524,7 @@ const demoReviewEvidence = (
       activity === undefined ? "unavailable" : activity.submission.status === "submitted" ? "submitted" : "none",
     findings: activity?.findings ?? 0,
     modelReaction: correlation.modelReaction,
+    findingRepairChainObserved: correlation.findingRepairChainObserved,
     followUp: correlation.followUp,
     ...demoReviewLatency(activity)
   }
@@ -521,7 +538,9 @@ const demoReviewLatency = (activity: ReturnType<typeof readActivity> | undefined
 const observeDemoActivity = Effect.fn("FirstReviewDemo.observeDemoActivity")(function* (
   root: string,
   sessionId: string | undefined,
-  deadlineAt: number
+  deadlineAt: number,
+  budgetPath: string,
+  sourceHash: string | undefined
 ) {
   const observedSessionId = sessionId ?? ""
   const activityPath = yield* Config.NonEmptyString("REVIEW_ACTIVITY_PATH").pipe(
@@ -534,15 +553,20 @@ const observeDemoActivity = Effect.fn("FirstReviewDemo.observeDemoActivity")(fun
   })
   const initial = yield* observeActivity()
   const needsObservation = (activity: typeof initial) =>
-    activity !== undefined &&
-    !(
-      activity.counts.clear +
-        activity.counts.findings +
-        activity.counts.unavailable +
-        activity.counts.incomplete +
-        activity.counts.skipped >=
-        2 && activity.submission.status === "submitted"
-    )
+    sessionId !== undefined &&
+    (activity === undefined ||
+      !(
+        activity.counts.clear +
+          activity.counts.findings +
+          activity.counts.unavailable +
+          activity.counts.incomplete +
+          activity.counts.skipped >=
+          2 && activity.submission.status === "submitted"
+      ) ||
+      (sourceHash !== undefined &&
+        !readDemoTrace(budgetPath, observedSessionId).some(
+          (entry) => entry.kind === "terminal" && entry.sourceHash === sourceHash
+        )))
   let activity = initial
   if (needsObservation(initial) && (yield* monotonicMillis) + 250 <= deadlineAt) {
     yield* Effect.sleep(250)
@@ -594,7 +618,7 @@ export const executeInstalledCodexDemo = Effect.fn("FirstReviewDemo.executeInsta
       const host = demoHostOutcome(hostResult, durationMs, hostTimeoutMs)
       const after = yield* demoIo("read final demo source", () =>
         readFile(join(options.root, "session.ts"), "utf8")
-      ).pipe(Effect.catch(() => Effect.succeed(before)))
+      ).pipe(Effect.catch(() => Effect.succeed(undefined)))
       const now = yield* monotonicMillis
       const validatorPassed = (yield* execFileClosedStdin(
         validator.executable,
@@ -608,25 +632,32 @@ export const executeInstalledCodexDemo = Effect.fn("FirstReviewDemo.executeInsta
       )).succeeded
       const afterValidation = yield* demoIo("recheck validated demo source", () =>
         readFile(join(options.root, "session.ts"), "utf8")
-      )
-      const validation = validatorPassed && after === afterValidation
-      const validatedSourceHash = validation ? createHash("sha256").update(afterValidation).digest("hex") : undefined
+      ).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const stableSourceHash =
+        after !== undefined && after === afterValidation ? createHash("sha256").update(after).digest("hex") : undefined
+      const validation = validatorPassed && stableSourceHash !== undefined
       const events = jsonLines(host.stdout)
       const eventCounts = hostEventCounts(events)
       const thread = events.find((event) => event.type === "thread.started")
       const sessionId = typeof thread?.thread_id === "string" ? thread.thread_id : undefined
-      const activity = yield* observeDemoActivity(options.root, sessionId, deadlineAt)
+      const activity = yield* observeDemoActivity(
+        options.root,
+        sessionId,
+        deadlineAt,
+        options.budgetPath,
+        stableSourceHash
+      )
       const finalMessageIndex = events.findLastIndex(isAgentMessage)
       const finalCompletedIndex = events.findLastIndex((event) => event.type === "item.completed")
-      const changed = after !== before
+      const changed = after !== undefined && after !== before
       const terminalReviews =
         activity === undefined ? 0 : activity.counts.clear + activity.counts.findings + activity.counts.unavailable
       const usage = readDemoBudgetUsage(options.budgetPath)
       const correlation = correlatedHostEvidence({
         trace: sessionId === undefined ? [] : readDemoTrace(options.budgetPath, sessionId),
-        finalSourceHash: validatedSourceHash,
+        finalSourceHash: stableSourceHash,
         hostEvents: events,
-        finalReportAfterEdits: finalMessageIndex >= 0 && finalMessageIndex === finalCompletedIndex && changed,
+        finalReportAfterEdits: finalMessageIndex >= 0 && finalMessageIndex === finalCompletedIndex,
         repairValidated: validation
       })
       return {
@@ -809,6 +840,7 @@ const demoPassed = (value: DemoExecution | undefined): boolean =>
   value.host.completed &&
   value.review.submission === "submitted" &&
   value.review.findings > 0 &&
+  value.review.findingRepairChainObserved &&
   correlatedReaction(value.review.modelReaction) &&
   validatedFollowUp(value)
 

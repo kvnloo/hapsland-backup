@@ -388,6 +388,7 @@
         "bun": "catalog:",
         "effect": "catalog:",
         "istanbul-lib-instrument": "catalog:",
+        "smol-toml": "catalog:",
         "tree-sitter": "catalog:",
         "tree-sitter-typescript": "catalog:",
         "typescript": "catalog:",
