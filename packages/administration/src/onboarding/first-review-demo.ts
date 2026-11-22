@@ -231,15 +231,9 @@ const makeFixture = Effect.fn("FirstReviewDemo.makeFixture")((statePath: string)
             })
           )
           yield* demoIo("write demo configuration", () =>
-            writeFile(
-              join(root, ".hapsland.jsonc"),
-              JSON.stringify({
-                version: 1,
-                includes: ["session.ts"],
-                settings: { deadlineMs: 15_000, concurrency: 1, adviceBudget: 3, transientRetries: 0 }
-              }) + "\n",
-              { mode: 0o600 }
-            )
+            writeFile(join(root, ".hapsland.jsonc"), JSON.stringify({ version: 1, includes: ["session.ts"] }) + "\n", {
+              mode: 0o600
+            })
           )
           yield* runFixtureGit(["-C", root, "add", "session.ts", ".hapsland.jsonc", ".review-demo-owner.json"])
           yield* runFixtureGit([

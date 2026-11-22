@@ -19,6 +19,7 @@ import {
 } from "@hapsland/administration/onboarding/first-review-demo"
 import { claimDemoBudget, readDemoBudgetUsage } from "@hapsland/activity-observation/activity/demo-budget"
 import { readDemoTrace, recordDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
+import { loadReviewSettings } from "@hapsland/review-definition/runtime/review-config"
 
 const roots: Array<string> = []
 
@@ -239,6 +240,13 @@ describe("installed-product first-review demo", () => {
       timeMs: DEMO_TIME_BUDGET_MS
     })
     expect(existsSync(result.demo.disposableRoot)).toBe(true)
+    const settings = await run(
+      test,
+      loadReviewSettings(result.demo.disposableRoot, { userConfigPath: join(test.root, "user.jsonc") })
+    )
+    expect(settings.configuration.policy.layers.find((layer) => layer.name === "project")?.document.includes).toEqual([
+      "session.ts"
+    ])
     await run(
       test,
       runFirstReviewDemo(
