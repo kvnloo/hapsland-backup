@@ -440,9 +440,15 @@ export const correlatedHostEvidence = (
     findingRepairChainObserved:
       matchesFeedback &&
       delivery !== undefined &&
-      validatedEdit !== undefined &&
-      validatedEdit.at > delivery.at &&
-      postRepairReview(observations, validatedEdit).status === "completed"
+      observations.trace.some(
+        (entry) =>
+          entry.kind === "edit" &&
+          entry.editedPath === "session.ts" &&
+          entry.at > delivery.at &&
+          entry.sourceHash === observations.finalSourceHash &&
+          entry.sourceHash !== delivery.sourceHash &&
+          postRepairReview(observations, entry).status === "completed"
+      )
   }
 }
 

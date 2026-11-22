@@ -255,6 +255,33 @@ describe("installed-product first-review demo", async () => {
       followUp: { status: "completed" },
       findingRepairChainObserved: false
     })
+    const quotedRevert = correlatedHostEvidence({
+      ...observed,
+      trace: [
+        { ...trace[2]!, feedbackDigests: [demoFeedbackDigest("other feedback")] },
+        { ...trace[2]!, at: 4, sourceHash: repaired },
+        { ...trace[3]!, at: 5, sourceHash: "c".repeat(64) },
+        { ...trace[3]!, at: 6 },
+        { ...trace[4]!, at: 7 }
+      ]
+    })
+    expect(quotedRevert).toMatchObject({
+      modelReaction: { status: "observed" },
+      followUp: { status: "completed" },
+      findingRepairChainObserved: false
+    })
+    const laterRepair = correlatedHostEvidence({
+      ...observed,
+      trace: [
+        ...trace.map((entry) =>
+          entry.kind === "delivery" ? { ...entry, feedbackDigests: [demoFeedbackDigest("other feedback")] } : entry
+        ),
+        { ...trace[2]!, at: 6 },
+        { ...trace[3]!, at: 7 },
+        { ...trace[4]!, at: 8 }
+      ]
+    })
+    expect(laterRepair.findingRepairChainObserved).toBe(true)
     expect(
       correlatedHostEvidence({
         ...observed,

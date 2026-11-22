@@ -125,6 +125,76 @@ const authorization = (output: SetupOutput) => ({
   installProposalDigest: output.actions.find((action) => action.code === "approve-installation")?.authorization
     ?.installProposalDigest
 })
+it("reports malformed Claude custody through the ordinary setup conflict stage", () => {
+  const test = fixture()
+  const claudeHome = join(test.root, "claude-home")
+  mkdirSync(claudeHome)
+  mkdirSync(join(claudeHome, ".hapsland"))
+  writeFileSync(join(claudeHome, ".hapsland", "claude-installation-v1.json"), "{ malformed")
+  const claudeExecutable = join(test.root, "claude")
+  writeFileSync(claudeExecutable, "#!/bin/sh\nprintf '2.1.218\\n'\n", { mode: 0o700 })
+  const result = invoke(test, {
+    host: "claude",
+    claudeHome,
+    claudeExecutable,
+    scope: { cwd: test.repository, review: "disabled" },
+    credential: "skip"
+  })
+  expect(result.status).toBe("conflict")
+  expect(result.stages.find((stage) => stage.stage === "installation")?.status).toBe("conflict")
+  expect(result.actions.some((action) => action.code === "resolve-installation-conflict")).toBe(true)
+})
+it.skipIf(process.getuid?.() === 0)(
+  "reports pending Claude uninstall through the ordinary setup conflict stage",
+  () => {
+    const test = fixture()
+    const claudeHome = join(test.root, "claude-home")
+    mkdirSync(claudeHome)
+    const claudeExecutable = join(test.root, "claude")
+    writeFileSync(claudeExecutable, "#!/bin/sh\nprintf '2.1.218\\n'\n", { mode: 0o700 })
+    const request = {
+      host: "claude",
+      claudeHome,
+      claudeExecutable,
+      scope: { cwd: test.repository, review: "disabled" },
+      credential: "skip"
+    }
+    const preview = invoke(test, request)
+    expect(
+      invoke(test, { ...request, ...authorization(preview) }).stages.find((stage) => stage.stage === "installation")
+        ?.status
+    ).toBe("complete")
+    const uninstall = (proposalDigest?: string) =>
+      JSON.parse(
+        spawnSync(bunExecutable(), [setupEntrypoint(), "--uninstall"], {
+          cwd: test.repository,
+          env: test.environment,
+          input: JSON.stringify({
+            version: 1,
+            operation: "uninstall",
+            host: "claude",
+            claudeHome,
+            claudeExecutable,
+            ...(proposalDigest === undefined ? {} : { proposalDigest })
+          }),
+          encoding: "utf8",
+          timeout: DEFAULT_CHILD_TIMEOUT_MS
+        }).stdout
+      )
+    const removal = uninstall()
+    expect(removal.status).toBe("preview")
+    chmodSync(claudeHome, 0o500)
+    try {
+      expect(uninstall(removal.proposal.digest).status).toBe("conflict")
+    } finally {
+      chmodSync(claudeHome, 0o700)
+    }
+    const result = invoke(test, request)
+    expect(result.status).toBe("conflict")
+    expect(result.stages.find((stage) => stage.stage === "installation")?.status).toBe("conflict")
+    expect(result.actions.some((action) => action.code === "resolve-installation-conflict")).toBe(true)
+  }
+)
 it.skipIf(process.getuid?.() === 0)(
   "resumes an interrupted initial Claude setup as the approved install operation",
   () => {

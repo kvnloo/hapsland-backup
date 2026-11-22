@@ -1037,16 +1037,14 @@ export const claudeSetupOperation = Effect.fn("ClaudeInstallation.setupOperation
   request: ClaudeInstallationRequest
 ) {
   const input = yield* resolveInputs(request)
-  const record = readRecord(input.paths.ownership)
-  if (record?.pending?.operation === "uninstall")
-    return yield* Effect.fail(
-      new ClaudeInstallationError({ reason: "Complete the pending Claude uninstall before setup" })
-    )
-  if (record?.pending !== undefined) return record.pending.operation
-  const settings = file(input.paths.settings) ?? ""
-  return record !== undefined || settings.includes(MARKER) || settings.includes(COMPOSED_MARKER)
-    ? ("update" as const)
-    : ("install" as const)
+  return yield* Effect.try(() => {
+    const record = readRecord(input.paths.ownership)
+    if (record?.pending?.operation === "install") return "install" as const
+    const settings = file(input.paths.settings) ?? ""
+    return record !== undefined || settings.includes(MARKER) || settings.includes(COMPOSED_MARKER)
+      ? ("update" as const)
+      : ("install" as const)
+  }).pipe(Effect.catch(() => Effect.succeed("update" as const)))
 })
 export const uninstallClaudeIntegration = Effect.fn("ClaudeInstallation.uninstall")(function* (
   request: ClaudeInstallationRequest
