@@ -63,7 +63,7 @@ the original installation exited. A shared process group that is still live also
 blocks recovery. The command does not repair the source failure that triggered
 the installation failure.
 
-Automatic ownership evidence: `node --test scripts/build-lock.test.mjs
+Selected ownership tooling evidence: `node --test scripts/build-lock.test.mjs
 scripts/build-ownership.test.mjs scripts/build-process.test.mjs`.
 
 The extended recovery regression is **manual only**, because repeated real child
@@ -108,7 +108,7 @@ finding. A new tool-call ID alone is not a fresh edit under the
 | `boundary` | IPC, process, CLI, hooks and installation consumers | Required explicit files; package preparation follows the selected import closure |
 | `native` | Compiler checks or a real agent scenario | `--native-target=typescript\|rust\|bend` and compiler test files; or explicit `--host`, `--provider`, `--model`, `--scenario` |
 | `stress` | Saturation tests with a deadline, seeded simulation or contention checks | Required explicit files; assertions and seeds stay unchanged |
-| `quality` | Existing full deterministic gate and fresh coverage/CRAP analysis | Complete inventory; filters are refused |
+| `quality` | Explicit optional full coverage/CRAP analysis | Complete inventory; filters are refused; not a release or ordinary CI prerequisite |
 
 Focused Node-only selections omit workspace preparation for the source-only
 convention: `.mjs` modules with explicit static relative `.mjs` imports and
@@ -211,6 +211,20 @@ Ordinary `npm test`, coverage/quality checks, and production/release builds excl
 
 ## Which gate to run
 
+Task and release acceptance starts with `npm run check:fast` and the affected
+owner/consumer checks selected for the accepted behavior. Build/harness/performance
+self-tests are explicit: `npm run test:tooling` runs their inventory through the
+existing focused runner; append test files to select only changed tool owners.
+They do not precede every product test. In the measured release run, tooling
+`build-workflow` self-tests took 307.24 seconds before product compilation; its
+development archive build then took 495.49 seconds. These are separate costs,
+not a measurement of coverage overhead.
+
+For a release, prepare one audited archive with `release:prepare` and reuse those
+exact bytes for selected installed conformance. A failed or interrupted development
+archive is not promoted. Blanket source coverage/CRAP analysis is optional;
+absence of that analysis is not a coverage pass.
+
 Package-impact tooling uses `node --test scripts/package-impact.test.mjs scripts/package-graph.test.mjs`
 plus `node scripts/package-impact.mjs --base BASE --head HEAD --merge-base` against
 the actual review branch. These checks cover endpoint manifests, downstream
@@ -264,9 +278,9 @@ evidence before regenerating the scenario pages.
 | Credential policy and approved saving | `npm run test:focused -- src/credentials/input.test.ts src/credentials/file-saving.test.ts src/credentials/login-interaction.test.ts src/credentials/direct-input.test.ts src/onboarding/setup.test.ts`; `npm run conformance:setup-package -- --archive=PATH --profile=HOST --development-checkout=ISOLATED_CANDIDATE` | Lookup precedence, empty-environment authority, owner-bound file approval, stale targets, private atomic saving, direct native automation; installed setup and optional real development rebuild/update/new-key with artifact exclusion | Source fixtures are deterministic and offline. Installed/development execution must run separately on macOS arm64 and Linux arm64. The optional development candidate must be a separate repository checkout of the acceptance candidate with pinned dependencies and build tools ready, containing no copied ignored credentials. The runner temporarily changes its login help and creates a fixture project credential, then restores/removes both. Each dev-install invocation is bounded to 300 seconds; these are heavy checks. No provider requests or native-agent support claim. |
 | Routine deterministic gate | `npm test` | Bend artifact and authority checks, boundary scripts, Vitest tests for the reducer, adapters, resident, and CLI | Logic and controlled fixtures; no native agent or Jev call |
 | Process harness contention | `npm run test:contention`; `npm run test:harness:inventory` | Full deterministic gate under the declared Linux CPU-pressure profile; transitive process/scenario inventory; hung-child cleanup probes | Declared scheduling profile and finite harness failure; no product deadline, latency, or arbitrary-starvation claim |
-| TypeScript quality gate | `npm run quality:check -- --ack-checks-policy` | Full deterministic gate with fresh Istanbul coverage, then pinned crap4ts analysis of `src`, extracted production TypeScript owners, and `scripts/test-support`, as selected by `crap4ts.json` | Advisory per-function CRAP scores; blocking tests and missing evidence; no correctness or assertion-quality guarantee |
+| Optional TypeScript quality analysis | `npm run quality:check -- --ack-checks-policy` | Explicit full deterministic inventory with fresh Istanbul coverage and pinned crap4ts analysis | Strict evidence inside the selected analysis; advisory scores; not mandatory for releases or ordinary CI |
 | Compile/package source | `npm run typecheck`; `npm run build` | TypeScript typing, Bend artifacts, native helpers, standalone Bun commands and agent extension assets | Buildability of this checkout; the foreign profile imports a current source-bound native bundle and dependency parser prebuilds; local format/receipt checks do not establish foreign-host execution |
-| Build workflow adapters | `node --input-type=module -e 'import {precheckStages} from "./scripts/test-harness/check-stages.mjs"; import {spawnSync} from "node:child_process"; const stage=precheckStages.find(([name])=>name==="build-workflow"); const result=spawnSync(process.execPath,stage.slice(1),{stdio:"inherit",timeout:150000}); if(result.error) throw result.error; process.exit(result.status??1)'` | Manifest graph, compiler and assembly receipts, native cache inputs and restoration, process ownership, source loader policy, and watch coordination | Adapter tests; actual production builds, installed behavior and platform qualification require their own checks. |
+| Build and verification tooling self-tests | `npm run test:tooling`; append explicit test files for changed owners | Builder, receipt, harness, native-fixture and measurement-tool regressions | Explicit tooling qualification; candidate receipt/source/archive admission and actual product boundary checks remain in ordinary operations |
 | Hook source and runtime import boundaries | `node --test scripts/check-workspace-imports.test.mjs scripts/source-loader-policy.test.mjs scripts/hook-import-boundary.test.mjs`; `npx vitest run --maxWorkers=1 src/runtime/review-engine-boundary.test.ts` | Declared hook/Pi entries, transitive local and workspace edges including type-only edges, forbidden owners, supported loader shapes and lexical bindings; runtime engine/parser/provider assertions | Source checks reject unsupported loaders. External dependency contributions and emitted/compiler closure require their separate build evidence; this gate alone does not establish emitted isolation. |
 | Runtime clock compatibility | `HAPSLAND_BUILD_BUN=/absolute/path/to/bun node scripts/check-runtime-clock.mjs --source-only`; pass a comparison declaration for the Linux installed witness | Separate Node/Bun OS-clock readings, pre-import delay, and installed admission/stale rejection | Shared monotonic coordinates and unchanged admission window; exact platform execution required |
 | Installed hook startup comparison | `node scripts/measure-hook-startup.mjs DECLARATION.json` | One to three installed variants, 15–100 interleaved registrations per variant with its own verified ready resident, and 3–30 separate fresh-resident calls per variant; declare artifact hashes, sample counts and comparison criteria before execution | Parent monotonic elapsed times, registration outcomes and resident executable/lifetime identities without coverage; uncontrolled OS file cache, fresh resident does not imply cold file cache, no handler-readiness or population latency guarantee |
@@ -578,15 +592,15 @@ and Lean 4.34.0 and runs the progress, journey and content-isolation proofs and
 semantic mutants. It does not wait for native inputs or install workspace dependencies.
 The runtime job requires both this job and native inputs to pass, installs only
 the Bend compiler through `--compiler-only`, then runs typecheck,
-`npm run quality:check -- --ack-checks-policy`, and build. Documentation generation
+uninstrumented `npm test`. Documentation generation
 and drift checks are explicit manual operations. It does not invoke live Jev or native agent
 milestones; those remain separate declared checks above.
 
-Only that CI quality step sets `HAPSLAND_BEND_PROOFS=separate-job`. Its Bend
-prechecks retain the concrete law-instance checks through `--falsify-only`;
-the independent proof job owns kernel checks and semantic mutants. Local full
-gates retain both groups. Unknown delegation modes and delegation outside CI
-are rejected. The stage records contain the actual selected arguments.
+The independent proof job executes concrete instances, kernel proofs and mutants
+once; runtime prechecks do not repeat them. Run `node packages/agent-flow-bend/scripts/check-progress.mjs` and
+`npm run test:content-isolation` locally when changing Bend semantics, proofs,
+mutants, ABI or compiler, or establishing a new proof claim. Unrelated TypeScript
+releases use their goal-selected runtime checks without claiming a new proof run.
 
 The [proof toolchain installer](../scripts/install-bend-toolchain.mjs) downloads
 first-party Linux x64/arm64 archives with pinned SHA256 digests and checks the
@@ -701,10 +715,10 @@ focused owner and affected-consumer checks. The parent or integrator may assign
 a worker to execute the final gate on the integrated candidate; ownership of
 final acceptance remains with the parent or integrator.
 
-Apply the full-gate criteria to the combined accepted scope. When selected,
-plan one full-suite acceptance at the end of that work on a stable, review-ready
-candidate containing all required slices. A worker handoff or commit does not by
-itself require another full run. An independently deliverable task may qualify
+Select checks against the combined accepted scope, including affected physical
+boundaries. Release qualification uses one freshly audited archive for selected
+installed consumers; full coverage/CRAP analysis is explicit opt-in. A worker
+handoff or commit does not itself require a blanket full run. A task may qualify
 in its own worktree before merge. Keep the candidate frozen during qualification
 and follow the failure-diagnosis rules in [CHECKS.md](../CHECKS.md) for any
 necessary repeat. Explicit requests and existing CI and hook requirements still apply. Keep all required
@@ -965,7 +979,7 @@ fixtures, source policy checks and ordinary build acceptance.
 `npm run quality:check -- --ack-checks-policy` regenerates coverage through
 `npm run test:coverage`, which includes the existing boundary checks and tests.
 The tool removes the previous JSON artifact before running that command and
-stops if tests fail, so stale coverage cannot produce a passing CI result.
+stops if tests fail, so stale coverage cannot produce a passing analysis result.
 For machine-readable gate feedback after the run, use
 `npm run --silent test:status -- --json > crap-report.json`. The retained record
 contains every stage exit and log path plus all Vitest failures; CRAP analysis

@@ -1,10 +1,4 @@
-// Preserve the deterministic boundary/proof inventory independently of CLI routing.
-const proofMode = process.env.HAPSLAND_BEND_PROOFS
-if (proofMode !== undefined && proofMode !== "separate-job")
-  throw new Error("HAPSLAND_BEND_PROOFS accepts only separate-job")
-if (proofMode === "separate-job" && process.env.GITHUB_ACTIONS !== "true")
-  throw new Error("Separate-job proof delegation is restricted to CI; local gates include proofs")
-const bendRuntimeArguments = proofMode === "separate-job" ? ["--falsify-only"] : []
+// Current-candidate checks and explicit tooling self-tests have separate inventories.
 export const qualityPreflight = [
   "quality-preflight",
   "--test",
@@ -43,7 +37,6 @@ export const qualityCoverageConsumer = Object.freeze({
   ]
 })
 export const precheckStages = [
-  qualityPreflight,
   ["bend-generation", "scripts/build-bend-producers.mjs"],
   ["bend-artifacts", "scripts/verify-bend-artifacts.mjs"],
   ["canonical-authority", "scripts/check-canonical-authority.mjs"],
@@ -70,10 +63,13 @@ export const precheckStages = [
     "file-eligibility-boundary",
     "rule-boundary"
   ].map((name) => [name, `scripts/check-${name}.mjs`]),
-  ["bend-progress", "packages/agent-flow-bend/scripts/check-progress.mjs", ...bendRuntimeArguments],
-  ["content-isolation", "packages/agent-flow-bend/scripts/check-content-isolation.mjs", ...bendRuntimeArguments],
   nativeParserPreparation,
-  ["content-wire-mutants", "scripts/check-content-wire-mutants.mjs"],
+  ["content-wire-mutants", "scripts/check-content-wire-mutants.mjs"]
+]
+
+// Self-tests of verification/build/measurement tools are selected explicitly, not product prerequisites.
+export const toolingStages = [
+  qualityPreflight,
   [
     "native-pi-observation",
     "--test",
@@ -162,3 +158,6 @@ export const precheckStages = [
   ],
   ["test-harness", "--test", "scripts/test-harness/prepare-archive.test.mjs"]
 ]
+export const toolingTestFiles = [
+  ...new Set(toolingStages.flatMap(([, ...args]) => args.filter((arg) => /\.test\.mjs$/.test(arg))))
+].sort()

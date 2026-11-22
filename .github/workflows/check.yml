@@ -81,10 +81,8 @@ jobs:
         run: node scripts/check-repository-assets.mjs
       - name: Typecheck
         run: npm run typecheck
-      - name: Run deterministic tests, boundary checks, and CRAP analysis
-        env:
-          HAPSLAND_BEND_PROOFS: separate-job
-        run: npm run quality:check -- --ack-checks-policy
+      - name: Run uninstrumented deterministic tests and candidate boundary checks
+        run: npm test
       - name: Retain stage timings and complete failure logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

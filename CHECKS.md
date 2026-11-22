@@ -48,11 +48,18 @@ or CI. Source and product contract checks remain in their existing owners.
 - Build/test/coverage changes MUST pass a real affected consumer with matching
   environment, instrumentation and product deadlines. Helper tests insufficient.
   Owner/fixture moves MUST pass affected fixtures against current exports/paths.
-- Full `npm run quality:check`: release, declared milestone, explicit request,
-  changed end-to-end evidence boundary, or cross-cutting impact unbounded by
-  focused checks. Known failed prerequisite blocks full run.
-  Documentation, filenames, literals and
-  bounded configuration alone do not require it. CI retains the full gate.
+- Task acceptance uses `check:fast` and goal-selected owner/consumer checks.
+  A release also needs one freshly audited archive from `release:prepare`, reused
+  for the selected installed conformance checks. Do not rebuild a development
+  archive merely to qualify a source-only change. Known relevant failures block
+  acceptance; interrupted runs remain interrupted.
+- `npm test` is the optional complete uninstrumented deterministic inventory and
+  ordinary CI command. Its prechecks validate current candidate boundaries.
+  Builder, harness and measurement self-tests are selected with `test:tooling`
+  when those tools change; they are not prerequisites for every product test.
+- `npm run quality:check -- --ack-checks-policy` is explicit opt-in CRAP/coverage
+  analysis. Neither releases nor ordinary CI require it. Select it for an actual
+  coverage or complexity question, declare the cost, and keep its evidence strict.
 - Failed gate: read `npm run test:status` and logs; classify every independent
   failure (preparation/build/proof/test/analysis). Relevant focused checks MUST
   pass on current inputs before another full run. Failures missed by preflight
@@ -67,7 +74,7 @@ or CI. Source and product contract checks remain in their existing owners.
   inputs never qualify. Release locks after owner processes and descendants stop.
   Claim executed evidence only; focused passes are not full-project coverage.
 
-The pinned crap4ts analysis regenerates coverage using the full deterministic
+When explicitly selected, pinned crap4ts analysis regenerates coverage using the full deterministic
 suite. Tests, lint, invalid coverage, missing evidence and analysis errors remain
 blocking. CRAP scores above the configured threshold are advisory: retain the
 machine report and summarize the affected functions for review. Treat the score
@@ -76,23 +83,23 @@ helpers. Preserve source selection and strict missing-evidence handling.
 Generated diagnostics belong in ignored `.test-runs` and short-lived CI artifacts;
 they are not repository source or a tracked history archive.
 Documentation/tooling changes use affected tool/consumer, type and documentation
-checks; full gate only when the criteria above apply. Same selection under `src`.
+checks. Same selection under `src`.
 
-## Full-run acknowledgment
+## Explicit analysis and proof selection
 
-Before a full run, explicitly confirm this policy was read and applied: required
+Before an explicit quality analysis, confirm this policy was read and applied: required
 behavior sourced, checks justified by goals, and relevant cheap prerequisites
 passed. Confirmation applies to one run, not a permanent tracked checkbox.
-CI configuration must apply the same prerequisite order and confirm explicitly.
-CI checks Bend proofs and semantic mutants in an independent required job.
-After that job passes, the runtime quality step uses
-`HAPSLAND_BEND_PROOFS=separate-job` for its concrete Bend law-instance checks.
-Local full gates retain kernel proofs and mutants; this delegation is CI-only.
+CI checks Bend concrete instances, kernel proofs and semantic mutants once in
+its independent proof job. Runtime prechecks do not repeat them. Run the existing
+progress and content-isolation proof commands locally when Bend semantics,
+proofs, mutants, ABI or compiler change, or when making a new proof claim.
+Unrelated TypeScript releases do not require repeating unchanged proof inputs.
 Acknowledgment is responsibility, not evidence; passing prerequisites is evidence.
 
 Run `npm run quality:check -- --ack-checks-policy` (or
 `npm run verify -- --profile=quality --ack-checks-policy`). The runner rejects
 missing acknowledgment before creating run state. Harness prerequisite tests
-must pass before lint/coverage; the nested full suite reuses that stage result.
-These prerequisites validate runner, reporting and verification-plan contracts, not all
+run once before lint/coverage; ordinary test prechecks do not repeat these self-tests.
+These analysis prerequisites validate runner, reporting and verification-plan contracts, not all
 product consumers. Run task-specific consumer checks as required above.

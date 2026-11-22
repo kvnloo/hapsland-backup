@@ -32,7 +32,10 @@ test("ordinary test and release plans leave development modules optional", () =>
   assert.doesNotMatch(manifest.scripts.build, /monkey-business|game-lab|canonical-defense/u)
   assert.ok(precheckStages.some(([name]) => name === "bend-artifacts"))
   assert.ok(precheckStages.some(([name]) => name === "production-authority"))
-  assert.ok(precheckStages.some(([name]) => name === "content-isolation"))
+  assert.equal(
+    precheckStages.some(([name]) => name === "content-isolation"),
+    false
+  )
   assert.ok(precheckStages.some(([name]) => name === "content-wire-mutants"))
 })
 

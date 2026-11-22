@@ -8,6 +8,7 @@ import { resolve, join, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   precheckStages,
+  toolingTestFiles,
   qualityCoverageBun,
   qualityCoverageConsumer,
   qualityCoverageProvider,
@@ -790,7 +791,8 @@ const nodeTestArguments = (files) => [
 ]
 
 export async function focusedSelection(root, args) {
-  const files = [...new Set(args.filter((arg) => !arg.startsWith("-") && /\.test\.(?:m?[jt]sx?|cjs)$/.test(arg)))]
+  let files = [...new Set(args.filter((arg) => !arg.startsWith("-") && /\.test\.(?:m?[jt]sx?|cjs)$/.test(arg)))]
+  if (args.includes("--tooling") && files.length === 0) files = [...toolingTestFiles]
   if (!files.length)
     throw new Error("Focused checks require explicit existing test files; options alone cannot select the full suite.")
   for (const file of files) {
@@ -799,7 +801,7 @@ export async function focusedSelection(root, args) {
       throw new Error(`Invalid focused test file: ${file}`)
   }
   // Arguments must not introduce wildcard/directory filters that silently broaden selection.
-  const other = args.filter((arg) => !files.includes(arg))
+  const other = args.filter((arg) => !files.includes(arg) && arg !== "--tooling")
   if (other.some((arg) => !arg.startsWith("-") && !/^[0-9]+$/.test(arg)))
     throw new Error("Use explicit test files and --option=value syntax for focused options.")
   return {
@@ -838,7 +840,17 @@ export async function main(argv = process.argv.slice(2), root = defaultRoot, pla
   if (mode === "quality" && acknowledgment.length !== 1)
     throw new Error("Full quality run blocked: read CHECKS.md, apply its policy, then pass --ack-checks-policy")
   const timeoutArg = raw.find((arg) => arg.startsWith("--timeout-ms="))
-  const timeoutMs = timeoutArg ? Number(timeoutArg.split("=")[1]) : mode === "focused" ? 300_000 : 1_500_000
+  const fullToolingInventory =
+    mode === "focused" &&
+    raw.includes("--tooling") &&
+    !raw.some((arg) => !arg.startsWith("-") && /\.test\.(?:m?[jt]sx?|cjs)$/.test(arg))
+  const timeoutMs = timeoutArg
+    ? Number(timeoutArg.split("=")[1])
+    : fullToolingInventory
+      ? 600_000
+      : mode === "focused"
+        ? 300_000
+        : 1_500_000
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 86_400_000)
     throw new Error("Timeout must be positive and at most one day")
   const scopeArgs = raw.filter((arg) => arg.startsWith("--scope="))
@@ -891,14 +903,8 @@ export async function main(argv = process.argv.slice(2), root = defaultRoot, pla
       await runSelectedTests(run, root, selection)
     } else {
       const precheckFailures = []
-      const parentStages = process.env[contextVariable] ? await stageResults(run.runDirectory) : []
       for (const [name, ...stageArgs] of precheckStages) {
         if (run.aborted) break
-        if (
-          name === qualityPreflight[0] &&
-          parentStages.some((stage) => stage.name === name && stage.state === "passed")
-        )
-          continue
         const result = await run.runStage({ name, command: process.execPath, args: stageArgs })
         if (result.state !== "passed") precheckFailures.push(result)
       }

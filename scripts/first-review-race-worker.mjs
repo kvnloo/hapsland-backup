@@ -16,6 +16,7 @@ const result = await Effect.runPromise(
         return {
           host: { completed: true, version: "race-fixture", durationMs: 1 },
           review: {
+            findingRepairChainObserved: true,
             providerCalls: 2,
             sourceBytes: 200,
             submission: "submitted",

@@ -15,6 +15,12 @@ differences emit a warning while source and archive admission remain mandatory. 
 Actions is optional supporting evidence. The source repository remains private;
 this flow provides no npm provenance attestation.
 
+Select `check:fast` and affected owner/consumer tests for the release's actual
+changes. Full source coverage and CRAP analysis are optional investigations,
+not publication prerequisites. Prepare one fresh audited archive through
+`release:prepare`, then reuse it for installed conformance and publication;
+do not qualify a release by promoting an interrupted development test archive.
+
 ## Platform archives and Homebrew
 
 The source repository is private. Public ready-made archives are published to

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createRun, stageResults, runQualityStages, focusedSelection, runSelectedTests, main } from "./run-checks.mjs"
-import { qualityCoverageConsumer } from "./check-stages.mjs"
+import { qualityCoverageConsumer, toolingTestFiles } from "./check-stages.mjs"
 import { withBuildLock } from "../build-lock.mjs"
 import { workspaceCompilationReason } from "./inventory.mjs"
 
@@ -36,6 +36,16 @@ async function fixture(t) {
   await writeFile(join(root, "scripts/test-harness/quality-report.mjs"), "process.exit(0)\n")
   return root
 }
+test("tooling alias expands the explicit inventory and permits a narrower owner selection", async () => {
+  const root = fileURLToPath(new URL("../../", import.meta.url))
+  const all = await focusedSelection(root, ["--tooling"])
+  assert.deepEqual(all.nodeFiles, toolingTestFiles)
+  assert.deepEqual(all.vitestFiles, [])
+  assert.deepEqual(all.options, [])
+  const selected = await focusedSelection(root, ["--tooling", "scripts/owned-lock.test.mjs", "--testNamePattern=lock"])
+  assert.deepEqual(selected.nodeFiles, ["scripts/owned-lock.test.mjs"])
+  assert.deepEqual(selected.options, ["--testNamePattern=lock"])
+})
 
 async function installCoverageSmokeStub(
   root,
