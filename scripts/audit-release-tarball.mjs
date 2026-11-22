@@ -115,7 +115,9 @@ export async function auditReleaseTarball(
   )
   if (!nativeFiles.length || new Set(nativeFiles).size !== nativeFiles.length)
     throw new Error("Invalid native release inventory")
+  const canonicalSkill = "skills/hapsland-rule-authoring/SKILL.md"
   const allowed = (name) =>
+    name === canonicalSkill ||
     name === "package.json" ||
     name === "package-runtime.json" ||
     name === "README.md" ||
@@ -166,6 +168,7 @@ export async function auditReleaseTarball(
     throw new Error("release package manifest differs from reviewed release coordinates or runtime contract")
   }
   const required = [
+    canonicalSkill,
     ...defaultRuleFiles,
     "package.json",
     "package-runtime.json",
@@ -200,6 +203,16 @@ export async function auditReleaseTarball(
     }
   }
   for (const name of required) if (!names.includes(name)) throw new Error(`release tarball is missing ${name}`)
+  validateReleasePublication(
+    root,
+    {
+      path: canonicalSkill,
+      publicPath: canonicalSkill,
+      sha256: sha256(gitFile(canonicalSkill)),
+      mode: Number.parseInt(command("git", ["ls-tree", commit, "--", canonicalSkill]).toString(), 8) & 0o777
+    },
+    archiveRecord(canonicalSkill)
+  )
   for (const name of defaultRuleFiles)
     if (
       archiveContentDigest(name) !== ruleMappings.find((asset) => asset.publicPath === name).sha256 ||
@@ -212,8 +225,10 @@ export async function auditReleaseTarball(
       archiveRecord(output.publicPath).mode !== output.mode
     )
       throw new Error(`shipped host module differs from validated assembly: ${output.publicPath}`)
-  for (const name of names.filter((name) =>
-    /^(?:dist\/.*\.js|docs\/.*\.md|README\.md|package-runtime\.json|bin\/launch\.sh)$/.test(name)
+  for (const name of names.filter(
+    (name) =>
+      name === canonicalSkill ||
+      /^(?:dist\/.*\.js|docs\/.*\.md|README\.md|package-runtime\.json|bin\/launch\.sh)$/.test(name)
   )) {
     const contents = archiveFile(name).toString("utf8")
     if (

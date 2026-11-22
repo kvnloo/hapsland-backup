@@ -36,6 +36,7 @@ export async function archiveInventory(
         const record = { directory: entry.type === "Directory", mode: entry.mode }
         records.set(path, record)
         const retainText =
+          path === "package/skills/hapsland-rule-authoring/SKILL.md" ||
           /^(?:package\/(?:package(?:-runtime)?\.json|README\.md|bin\/launch\.sh)|package\/(?:dist\/.*\.js|docs\/.*\.md|src\/rules\/defaults\/.*\.json))$/.test(
             path
           )
