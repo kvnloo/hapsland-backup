@@ -11,9 +11,7 @@ import { inspectResidentEffect as inspectResident } from "@hapsland/resident-tra
 import { inspectCodexInstallation } from "./codex-installation/queries.ts"
 import { execFileClosedStdin } from "@hapsland/runtime-environment/process/closed-stdin"
 import { initializeDemoBudget, readDemoBudgetUsage } from "@hapsland/activity-observation/activity/demo-budget"
-import { demoSourceHash, readDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
-import { loadReviewSettings } from "@hapsland/review-definition/runtime/review-config"
-import { selectApplicableRules } from "@hapsland/review-definition/rules/compiler"
+import { demoFeedbackDigest, readDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
 
 export const DEMO_SOURCE_BYTE_BUDGET = 4_096 as const
 export const DEMO_PROVIDER_CALL_BUDGET = 2 as const
@@ -341,7 +339,8 @@ export const uninstrumentedHostEvidence = (_observations: {
 type DemoCorrelationObservations = {
   readonly trace: ReturnType<typeof readDemoTrace>
   readonly finalSourceHash: string | undefined
-  readonly finalMessages: ReadonlyArray<string>
+  readonly hostEvents: ReadonlyArray<DemoHostEvent>
+  readonly finalReportAfterEdits: boolean
   readonly repairValidated: boolean
 }
 const findingReaction = (
@@ -365,7 +364,7 @@ const postRepairReview = (
       : observations.trace.find(
           (entry) =>
             entry.kind === "terminal" &&
-            entry.at >= reactionEdit.at &&
+            entry.at > reactionEdit.at &&
             entry.sourceHash === observations.finalSourceHash &&
             (entry.state === "clear" || entry.state === "findings")
         )
@@ -380,24 +379,53 @@ const postRepairReview = (
       ? { status: "unavailable", reason: "post-repair-review-not-instrumented" }
       : { status: "not-observed", source: "post-repair-terminal-review" }
 }
+const ReactionReport = Schema.Struct({
+  reaction: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("acted-on-feedback"), quote: Schema.NonEmptyString }),
+    Schema.Struct({ kind: Schema.Literal("no-reaction") })
+  ])
+})
+const decodeReactionReport = (message: string | undefined) => {
+  try {
+    return Option.getOrUndefined(
+      Schema.decodeUnknownOption(ReactionReport, { onExcessProperty: "error" })(JSON.parse(message ?? ""))
+    )
+  } catch {
+    return undefined
+  }
+}
 export const correlatedHostEvidence = (
   observations: DemoCorrelationObservations
 ): Pick<DemoExecution["review"], "modelReaction" | "followUp"> => {
-  const delivery = observations.trace.find((entry) => entry.kind === "delivery" && (entry.ruleIds?.length ?? 0) > 0)
+  const report = decodeReactionReport(finalHostMessage(observations.hostEvents))
+  const quote = report?.reaction.kind === "acted-on-feedback" ? report.reaction.quote : undefined
+  const delivery =
+    quote === undefined
+      ? undefined
+      : observations.trace.find(
+          (entry) => entry.kind === "delivery" && entry.feedbackDigests?.includes(demoFeedbackDigest(quote))
+        )
   const reactionEdit =
     delivery === undefined
       ? undefined
       : observations.trace.find(
-          (entry) => entry.kind === "edit" && entry.at >= delivery.at && entry.sourceHash !== delivery.sourceHash
+          (entry) =>
+            entry.kind === "edit" &&
+            entry.editedPath === "session.ts" &&
+            entry.at > delivery.at &&
+            entry.sourceHash === observations.finalSourceHash &&
+            entry.sourceHash !== delivery.sourceHash
         )
-  const mentionsFinding =
-    delivery?.ruleIds?.some((id) =>
-      observations.finalMessages.some((message) =>
-        new RegExp(`(^|[^a-z0-9_/-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_/-]|$)`, "i").test(message)
-      )
-    ) ?? false
+  const matchesFeedback =
+    observations.finalReportAfterEdits &&
+    report?.reaction.kind === "acted-on-feedback" &&
+    delivery?.feedbackDigests?.includes(demoFeedbackDigest(report.reaction.quote)) === true
   return {
-    modelReaction: findingReaction(delivery, reactionEdit, mentionsFinding),
+    modelReaction: findingReaction(
+      delivery ?? observations.trace.find((entry) => entry.kind === "delivery"),
+      reactionEdit,
+      matchesFeedback && observations.repairValidated
+    ),
     followUp: postRepairReview(observations, reactionEdit)
   }
 }
@@ -411,11 +439,10 @@ const isAgentMessage = (
   event.item !== null &&
   "type" in event.item &&
   event.item.type === "agent_message"
-const hostMessages = (events: ReadonlyArray<DemoHostEvent>): ReadonlyArray<string> =>
-  events
-    .filter(isAgentMessage)
-    .map((event) => event.item.text)
-    .filter((value): value is string => typeof value === "string")
+const finalHostMessage = (events: ReadonlyArray<DemoHostEvent>): string | undefined => {
+  const last = events.findLast((event) => event.type === "item.completed")
+  return last !== undefined && isAgentMessage(last) && typeof last.item.text === "string" ? last.item.text : undefined
+}
 const hostEventCounts = (events: ReadonlyArray<DemoHostEvent>) => {
   return {
     threads: events.filter((event) => event.type === "thread.started").length,
@@ -549,14 +576,7 @@ export const executeInstalledCodexDemo = Effect.fn("FirstReviewDemo.executeInsta
       const validationCommand = [validator.executable, ...validator.args, "--demo-validate"]
         .map((value) => `'${value.replaceAll("'", "'\\''")}'`)
         .join(" ")
-      const userConfigPath = Option.getOrUndefined(
-        yield* Config.option(Config.NonEmptyString("REVIEW_USER_CONFIG_PATH"))
-      )
-      const settings = yield* loadReviewSettings(options.root, userConfigPath === undefined ? {} : { userConfigPath })
-      const legend = selectApplicableRules(settings.rules ?? [], before, "session.ts")
-        .slice(0, 16)
-        .map((rule) => ({ id: rule.ruleId, message: rule.message.slice(0, 1_000) }))
-      const prompt = `This is an explicitly selected disposable review demo. The existing session.ts is deliberately flawed: it permits a logged-out session with a userId and a logged-in session without one. Do not use web search. Use apply_patch to add the optional field "readonly demoStarted?: true" inside Session. Then respond to any realtime review feedback as you normally would, choosing the repair yourself. If review feedback affects your change, cite its exact rule ID in your final report. Rule identification legend: ${JSON.stringify(legend)}. This legend is identification metadata, not evidence that feedback was delivered; cite an ID only when matching received feedback influences your repair. Use no more than two apply_patch calls total. Finally run ${validationCommand} and report its result.`
+      const prompt = `This is an explicitly selected disposable review demo. The existing session.ts is deliberately flawed: it permits a logged-out session with a userId and a logged-in session without one. Do not use web search. Use apply_patch to add the optional field "readonly demoStarted?: true" inside Session. Then respond to any realtime review feedback as you normally would, choosing the repair yourself. Use no more than two apply_patch calls total. Finally run ${validationCommand}. Your final response must be only JSON: {"reaction":{"kind":"acted-on-feedback","quote":"verbatim explanatory finding message you acted on"}} if received feedback influenced your repair, or {"reaction":{"kind":"no-reaction"}} otherwise. Quote the finding's explanatory message, without its file/declaration prefix. Do not infer that a finding was delivered from this demo description.`
       const environment = demoHostEnvironment(options)
       const testSandboxBypass =
         (yield* Config.String("REVIEW_DEMO_TEST_SANDBOX_BYPASS").pipe(Config.withDefault("0"))) === "1"
@@ -576,26 +596,37 @@ export const executeInstalledCodexDemo = Effect.fn("FirstReviewDemo.executeInsta
         readFile(join(options.root, "session.ts"), "utf8")
       ).pipe(Effect.catch(() => Effect.succeed(before)))
       const now = yield* monotonicMillis
-      const validation = (yield* execFileClosedStdin(validator.executable, [...validator.args, "--demo-validate"], {
-        cwd: options.root,
-        timeout: Math.max(1, Math.min(5_000, deadlineAt - now)),
-        maxBuffer: 1024 * 1024,
-        env: { ...process.env, NODE_NO_WARNINGS: "1" }
-      })).succeeded
+      const validatorPassed = (yield* execFileClosedStdin(
+        validator.executable,
+        [...validator.args, "--demo-validate"],
+        {
+          cwd: options.root,
+          timeout: Math.max(1, Math.min(5_000, deadlineAt - now)),
+          maxBuffer: 1024 * 1024,
+          env: { ...process.env, NODE_NO_WARNINGS: "1" }
+        }
+      )).succeeded
+      const afterValidation = yield* demoIo("recheck validated demo source", () =>
+        readFile(join(options.root, "session.ts"), "utf8")
+      )
+      const validation = validatorPassed && after === afterValidation
+      const validatedSourceHash = validation ? createHash("sha256").update(afterValidation).digest("hex") : undefined
       const events = jsonLines(host.stdout)
       const eventCounts = hostEventCounts(events)
       const thread = events.find((event) => event.type === "thread.started")
       const sessionId = typeof thread?.thread_id === "string" ? thread.thread_id : undefined
       const activity = yield* observeDemoActivity(options.root, sessionId, deadlineAt)
-      const messages = hostMessages(events)
+      const finalMessageIndex = events.findLastIndex(isAgentMessage)
+      const finalCompletedIndex = events.findLastIndex((event) => event.type === "item.completed")
       const changed = after !== before
       const terminalReviews =
         activity === undefined ? 0 : activity.counts.clear + activity.counts.findings + activity.counts.unavailable
       const usage = readDemoBudgetUsage(options.budgetPath)
       const correlation = correlatedHostEvidence({
         trace: sessionId === undefined ? [] : readDemoTrace(options.budgetPath, sessionId),
-        finalSourceHash: demoSourceHash(options.root),
-        finalMessages: messages,
+        finalSourceHash: validatedSourceHash,
+        hostEvents: events,
+        finalReportAfterEdits: finalMessageIndex >= 0 && finalMessageIndex === finalCompletedIndex && changed,
         repairValidated: validation
       })
       return {
@@ -630,7 +661,7 @@ const selectedInstallationReady = Effect.fn("FirstReviewDemo.selectedInstallatio
       ...(request.codexHome === undefined ? {} : { codexHome: request.codexHome }),
       ...(request.codexExecutable === undefined ? {} : { codexExecutable: request.codexExecutable })
     })
-    return "installed" in inspection && inspection.installed === true
+    return "hooksReady" in inspection && inspection.hooksReady === true
   }
 })
 
@@ -644,7 +675,7 @@ const previewSelectedDemo = Effect.fn("FirstReviewDemo.previewSelectedDemo")(fun
       version: 1 as const,
       operation: "demo" as const,
       status: "conflict" as const,
-      reason: "complete installation setup for the selected Codex home before previewing the live demo",
+      reason: "install and enable Hapsland hooks in the selected Codex home before previewing the live demo",
       paidVerificationPerformed: false as const,
       providerCalls: 0 as const
     }

@@ -1,3 +1,4 @@
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
 import type { NativeEditMetadata } from "@hapsland/native-observation/direct-event/observation"
 import * as ConfigProvider from "effect/ConfigProvider"
 import * as Effect from "effect/Effect"
@@ -294,7 +295,8 @@ export const runHookProgram = async (options: HookArguments, startedAt: number):
       Effect.provide(composedHookRuntimeLayer),
       Effect.provide(hookOutputLayer),
       Effect.provide(residentStartupLayer),
-      Effect.provide(machineClockLayer)
+      Effect.provide(machineClockLayer),
+      Effect.provide(NodeFileSystem.layer)
     )
   )
 }

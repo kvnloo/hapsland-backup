@@ -63,6 +63,7 @@ export const inspectCodexInstallation = Effect.fn("CodexInstallation.inspect")(f
         operation: "inspect-installation",
         status: "partial",
         installed: false,
+        hooksReady: false,
         host: { adapter: "codex", home: inputs.home },
         recovery: {
           operation: pendingJournal.operation,
@@ -73,6 +74,8 @@ export const inspectCodexInstallation = Effect.fn("CodexInstallation.inspect")(f
       }
     }
     const ownership = readOwnership(inputs.paths.ownership)
+    const integrations =
+      ownership === undefined ? undefined : resolveIntegrationSelection(undefined, ownership.integrations)
     let installed = false
     if (ownership !== undefined) {
       validateInspectedOwnership(ownership, inputs)
@@ -89,6 +92,8 @@ export const inspectCodexInstallation = Effect.fn("CodexInstallation.inspect")(f
       operation: "inspect-installation",
       status: installed ? "installed" : "missing",
       installed,
+      hooksReady: installed && integrations?.hooks === true,
+      ...(integrations === undefined ? {} : { integrations }),
       host: { adapter: "codex", home: inputs.home }
     }
   } catch (cause) {

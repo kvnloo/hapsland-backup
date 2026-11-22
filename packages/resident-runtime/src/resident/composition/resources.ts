@@ -1,3 +1,6 @@
+import * as FileSystem from "effect/FileSystem"
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
+import { recordDemoTraceEffect, type DemoTraceRecorder } from "@hapsland/activity-observation/activity/demo-trace"
 import { makeCollectionFindingOffer } from "../advice-delivery/finding-policy.ts"
 import { recordRepeatEditDiagnostic } from "../review-work/review-observation.ts"
 import { makeResidentInspection } from "../inspection/observer.ts"
@@ -26,6 +29,9 @@ export const makeResidentResources = Effect.fn("ResidentRuntime.resources")(func
   now: () => number,
   options: ResidentRuntimeOptions
 ) {
+  const traceFileSystem = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeFileSystem.layer))
+  const residentRecordDemoTrace: DemoTraceRecorder = (...args) =>
+    recordDemoTraceEffect(...args).pipe(Effect.provideService(FileSystem.FileSystem, traceFileSystem))
   const closed = yield* Deferred.make<void>()
   const runtimeConfiguration = yield* makeResidentRuntimeConfiguration().pipe(
     Effect.mapError(() => new ResidentAdapterError({ operation: "resident runtime configuration" }))
@@ -87,6 +93,7 @@ export const makeResidentResources = Effect.fn("ResidentRuntime.resources")(func
     paths,
     options,
     closed,
+    residentRecordDemoTrace,
     runtimeConfiguration,
     reviewSettings,
     residentLedger,

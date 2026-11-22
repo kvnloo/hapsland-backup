@@ -1,6 +1,7 @@
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
 import { bunExecutable } from "@hapsland/runtime-environment/runtime/bun-runtime"
 import * as Effect from "effect/Effect"
-import { ConfigProvider, Deferred, Fiber } from "effect"
+import { Deferred, Fiber } from "effect"
 import { execFileAsync } from "../../scripts/test-harness/process.mjs"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -18,10 +19,17 @@ import {
   DemoExecutionError
 } from "@hapsland/administration/onboarding/first-review-demo"
 import { claimDemoBudget, readDemoBudgetUsage } from "@hapsland/activity-observation/activity/demo-budget"
-import { demoSourceHash, readDemoTrace, recordDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
+import {
+  demoSourceHash,
+  demoFeedbackDigest,
+  readDemoTrace,
+  recordDemoTraceEffect
+} from "@hapsland/activity-observation/activity/demo-trace"
 import { loadReviewSettings } from "@hapsland/review-definition/runtime/review-config"
 import { connectDefaultRuleFixture, configuredRules } from "@hapsland/build-tooling/test-support/default-rules"
 
+const recordDemoTrace = (...args: Parameters<typeof recordDemoTraceEffect>) =>
+  Effect.runPromise(recordDemoTraceEffect(...args).pipe(Effect.provide(NodeFileSystem.layer)))
 const roots: Array<string> = []
 
 afterEach(() => {
@@ -72,8 +80,8 @@ const completed: DemoExecution = {
   repair: { changed: true, rejectsInvalidStates: true }
 }
 
-describe("installed-product first-review demo", () => {
-  it("records only source-free demo events for the budget-owned root", () => {
+describe("installed-product first-review demo", async () => {
+  it("records only source-free demo events for the budget-owned root", async () => {
     const test = fixture()
     const budget = join(test.root, "budget.json")
     writeFileSync(join(test.root, "session.ts"), "private synthetic source")
@@ -88,25 +96,46 @@ describe("installed-product first-review demo", () => {
       toolUseId: "tool",
       subagentId: null
     }
-    recordDemoTrace(budget, join(test.root, "other"), advicee, {
+    await recordDemoTrace(budget, join(test.root, "other"), advicee, {
       kind: "delivery",
       sourceHash,
       ruleIds: ["meaningless_combinations"]
     })
     expect(readDemoTrace(budget, "session")).toHaveLength(0)
-    recordDemoTrace(budget, test.root, advicee, { kind: "delivery", sourceHash, ruleIds: ["meaningless_combinations"] })
+    await recordDemoTrace(budget, test.root, advicee, {
+      kind: "delivery",
+      sourceHash,
+      ruleIds: ["meaningless_combinations"]
+    })
     expect(readDemoTrace(budget, "session")).toMatchObject([
       { kind: "delivery", ruleIds: ["meaningless_combinations"] }
     ])
-    expect(readFileSync(join(`${budget}.trace`, readdirSync(`${budget}.trace`)[0] ?? ""), "utf8")).not.toContain(
-      "private synthetic source"
-    )
+    expect(
+      readFileSync(
+        join(
+          `${budget}.trace`,
+          readdirSync(`${budget}.trace`, { recursive: true, encoding: "utf8" }).find((name) =>
+            name.endsWith(".json")
+          ) ?? ""
+        ),
+        "utf8"
+      )
+    ).not.toContain("private synthetic source")
   })
-  it("correlates delivered rule, later repair edit, final report, and terminal review of the validated source", () => {
+  it("correlates delivered rule, later repair edit, final report, and terminal review of the validated source", async () => {
     const first = "a".repeat(64)
     const repaired = "b".repeat(64)
+    const feedback = "A logged-out session still admits a user ID."
+    const acted = (quote: string) => JSON.stringify({ reaction: { kind: "acted-on-feedback", quote } })
     const trace = [
-      { version: 1 as const, sessionId: "session", at: 1, kind: "edit" as const, sourceHash: first },
+      {
+        version: 1 as const,
+        sessionId: "session",
+        at: 1,
+        kind: "edit" as const,
+        editedPath: "session.ts" as const,
+        sourceHash: first
+      },
       {
         version: 1 as const,
         sessionId: "session",
@@ -121,9 +150,17 @@ describe("installed-product first-review demo", () => {
         at: 3,
         kind: "delivery" as const,
         sourceHash: first,
-        ruleIds: ["meaningless_combinations"]
+        ruleIds: ["meaningless_combinations"],
+        feedbackDigests: [demoFeedbackDigest(feedback)]
       },
-      { version: 1 as const, sessionId: "session", at: 4, kind: "edit" as const, sourceHash: repaired },
+      {
+        version: 1 as const,
+        sessionId: "session",
+        at: 4,
+        kind: "edit" as const,
+        editedPath: "session.ts" as const,
+        sourceHash: repaired
+      },
       {
         version: 1 as const,
         sessionId: "session",
@@ -133,53 +170,84 @@ describe("installed-product first-review demo", () => {
         state: "clear" as const
       }
     ]
-    expect(
-      correlatedHostEvidence({
-        trace,
-        finalSourceHash: repaired,
-        finalMessages: ["Addressed meaningless_combinations; validation passed."],
-        repairValidated: true
-      })
-    ).toMatchObject({
+    const observed = {
+      trace,
+      finalSourceHash: repaired,
+      hostEvents: [{ type: "item.completed", item: { type: "agent_message", text: acted(feedback) } }],
+      finalReportAfterEdits: true,
+      repairValidated: true
+    }
+    expect(correlatedHostEvidence(observed)).toMatchObject({
       modelReaction: { status: "observed", deliveredFindingCorrelation: true },
       followUp: { status: "completed", terminalState: "clear", afterValidatedRepair: true }
     })
+    expect(correlatedHostEvidence({ ...observed, trace: trace.slice(0, 4) }).followUp.status).toBe("not-observed")
+    for (const finalMessages of [
+      ["Addressed meaningless_combinations"],
+      [acted(feedback), JSON.stringify({ reaction: { kind: "no-reaction" } })],
+      [acted("An unrelated finding.")],
+      ["I did not react to meaningless_combinations; validation passed."]
+    ]) {
+      expect(
+        correlatedHostEvidence({
+          ...observed,
+          hostEvents: finalMessages.map((text) => ({ type: "item.completed", item: { type: "agent_message", text } }))
+        }).modelReaction.status
+      ).toBe("not-observed")
+    }
     expect(
       correlatedHostEvidence({
-        trace: trace.slice(0, 4),
-        finalSourceHash: repaired,
-        finalMessages: ["Addressed meaningless_combinations"],
-        repairValidated: true
-      }).followUp.status
-    ).toBe("not-observed")
-    expect(
-      correlatedHostEvidence({
-        trace,
-        finalSourceHash: repaired,
-        finalMessages: ["Validation passed"],
-        repairValidated: true
+        ...observed,
+        hostEvents: [...observed.hostEvents, { type: "item.completed", item: { type: "agent_message", text: 12 } }]
       }).modelReaction.status
     ).toBe("not-observed")
+    expect(correlatedHostEvidence({ ...observed, finalReportAfterEdits: false }).modelReaction.status).toBe(
+      "not-observed"
+    )
+    expect(
+      correlatedHostEvidence({ ...observed, trace: trace.filter((entry) => entry.kind !== "delivery") }).modelReaction
+        .status
+    ).toBe("unavailable")
     expect(
       correlatedHostEvidence({
-        trace,
-        finalSourceHash: repaired,
-        finalMessages: ["Addressed meaningless_combinations"],
-        repairValidated: false
-      }).followUp.status
+        ...observed,
+        trace: trace.map((entry) =>
+          entry.kind === "edit" && entry.sourceHash === repaired ? { ...entry, at: 2 } : entry
+        )
+      }).modelReaction.status
     ).toBe("not-observed")
+    for (const changedTrace of [
+      trace.map((entry) => (entry.kind === "edit" && entry.sourceHash === repaired ? { ...entry, at: 3 } : entry)),
+      trace.map((entry) =>
+        entry.kind === "edit" && entry.sourceHash === repaired ? { ...entry, sourceHash: "c".repeat(64) } : entry
+      ),
+      trace.map((entry) => (entry.kind === "terminal" && entry.sourceHash === repaired ? { ...entry, at: 4 } : entry))
+    ]) {
+      const result = correlatedHostEvidence({ ...observed, trace: changedTrace })
+      expect(result.followUp.status).toBe("not-observed")
+    }
     expect(
       correlatedHostEvidence({
+        ...observed,
+        trace: [
+          ...trace.slice(0, 2),
+          { ...trace[2]!, feedbackDigests: [demoFeedbackDigest("An unrelated earlier delivery.")] },
+          { ...trace[2]!, at: 4 },
+          ...trace.slice(3).map((entry) => ({ ...entry, at: entry.at + 1 }))
+        ]
+      })
+    ).toMatchObject({ modelReaction: { status: "observed" }, followUp: { status: "completed" } })
+    expect(correlatedHostEvidence({ ...observed, repairValidated: false }).followUp.status).toBe("not-observed")
+    expect(
+      correlatedHostEvidence({
+        ...observed,
         trace: trace.map((entry) =>
           entry.kind === "terminal" && entry.sourceHash === repaired ? { ...entry, sourceHash: first } : entry
-        ),
-        finalSourceHash: repaired,
-        finalMessages: ["Addressed meaningless_combinations"],
-        repairValidated: true
+        )
       }).followUp.status
     ).toBe("not-observed")
   })
-  it("does not infer reaction or follow-up from generic positive-looking host observations", () => {
+  it("does not infer reaction or follow-up from generic positive-looking host observations", async () => {
     expect(
       uninstrumentedHostEvidence({
         messages: 3,
@@ -363,14 +431,7 @@ describe("installed-product first-review demo", () => {
     )
     const result = await run(
       test,
-      runFirstReviewDemo(
-        { ...liveRequest(proposal), codexExecutable: executable },
-        { statePath: test.demoStatePath }
-      ).pipe(
-        Effect.provide(
-          ConfigProvider.layer(ConfigProvider.fromUnknown({ REVIEW_USER_CONFIG_PATH: join(test.root, "user.jsonc") }))
-        )
-      )
+      runFirstReviewDemo({ ...liveRequest(proposal), codexExecutable: executable }, { statePath: test.demoStatePath })
     )
     expect(result).toMatchObject({
       status: "inconclusive",
@@ -389,7 +450,8 @@ describe("installed-product first-review demo", () => {
     const prompt: unknown = JSON.parse(readFileSync(promptPath, "utf8"))
     const selected = configuredRules.find((rule) => rule.ruleId === "meaningless_combinations")
     if (selected === undefined) throw new Error("fixture rule was not configured")
-    expect(prompt).toContain(JSON.stringify({ id: selected.ruleId, message: selected.message }))
+    expect(prompt).not.toContain(selected.ruleId)
+    expect(prompt).not.toContain(selected.message)
     expect(prompt).not.toContain("bare_domain_value")
     expect(readdirSync(test.demoStatePath)).toEqual([])
   })

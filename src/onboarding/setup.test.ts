@@ -218,6 +218,20 @@ const invokeMaskedSetup = async (
 }
 
 describe("public resumable setup operation", () => {
+  it("does not offer a hook-driven demo for a preserved MCP-only installation", () => {
+    const test = fixture()
+    const integrations = { hooks: false, mcp: true }
+    const preview = invoke(test, { integrations })
+    const completed = invoke(test, { integrations, ...authorization(preview) })
+    expect(completed.status).toBe("needs-user-action")
+    expect(completed.stages).toContainEqual(expect.objectContaining({ stage: "installation", status: "complete" }))
+    expect(completed).not.toHaveProperty("optionalNextSteps")
+    expect(existsSync(join(test.codexHome, "hooks.json"))).toBe(false)
+    const repeated = invoke(test, {})
+    expect(repeated.status).toBe("needs-user-action")
+    expect(repeated).not.toHaveProperty("optionalNextSteps")
+    expect(existsSync(join(test.codexHome, "hooks.json"))).toBe(false)
+  })
   it("installs with exact approval and effective file settings without a repository grant", () => {
     const test = fixture()
     const preview = invoke(test, {})
@@ -261,6 +275,9 @@ describe("public resumable setup operation", () => {
 
     const installed = invoke(test, approvals)
     expect(installed.status).toBe("needs-user-action")
+    expect(installed).toHaveProperty("optionalNextSteps", [
+      expect.objectContaining({ operation: "demo", selection: "preview", paid: false })
+    ])
     expect(installed.stages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ stage: "installation", status: "complete" }),

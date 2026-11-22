@@ -146,7 +146,10 @@ const inspectionCheck = (inspection: Readonly<Record<string, unknown>>): DoctorC
     return {
       stage: "configuration-ownership",
       status: "ready",
-      observed: "owned hook and feature match the installation record"
+      observed: {
+        integrations: inspection.integrations,
+        ownership: "selected integrations match the installation record"
+      }
     }
   return {
     stage: "configuration-ownership",
@@ -188,14 +191,19 @@ export const diagnoseInstalledIntegration = Effect.fn("Doctor.diagnose")(functio
   checks.push(runtimeCheck(compatibility.runtime), hostCheck(compatibility.codex, host))
   const inspection = recordValue(yield* inspectCodexInstallation(options.installation))
   checks.push(inspectionCheck(inspection))
-  const resident = yield* inspectResident()
+  const hooksSelected = recordValue(inspection.integrations).hooks !== false
+  const resident = hooksSelected ? yield* inspectResident() : undefined
   checks.push(
-    residentCheck(resident),
+    resident === undefined
+      ? { stage: "resident", status: "ready", observed: "not required for the selected MCP-only integration" }
+      : residentCheck(resident),
     {
       stage: "host-trust",
       status: "unknown",
       observed: "Codex does not expose an offline trust query for this integration",
-      action: "start Codex normally in the repository and complete any native trust or hook review prompt"
+      action: hooksSelected
+        ? "start Codex normally in the repository and complete any native trust or hook review prompt"
+        : "start Codex normally in the repository and complete any native trust or MCP server approval prompt"
     },
     options.credential,
     options.repository

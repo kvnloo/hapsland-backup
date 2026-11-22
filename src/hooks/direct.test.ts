@@ -1,3 +1,5 @@
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
+import type * as FileSystem from "effect/FileSystem"
 import { ConfigProvider, Effect, Layer } from "effect"
 import { beforeEach, expect, it, vi } from "vitest"
 import { makeDirectHookDispatch } from "../../packages/hook-runtime/src/hooks/direct.ts"
@@ -44,7 +46,9 @@ vi.mock("@hapsland/activity-observation/activity/status", async (original) => ({
   ...(await original<typeof import("@hapsland/activity-observation/activity/status")>()),
   recordActivity: ports.activity
 }))
-vi.mock("@hapsland/activity-observation/activity/demo-trace", () => ({ recordDemoTrace: ports.trace }))
+vi.mock("@hapsland/activity-observation/activity/demo-trace", () => ({
+  recordDemoTraceEffect: (...args: unknown[]) => Effect.sync(() => ports.trace(...args))
+}))
 vi.mock("@hapsland/resident-transport/resident/hook-clock", () => ({
   get hookMonotonicMillis() {
     return Effect.sync(() => ports.now())
@@ -94,10 +98,11 @@ const startup = Layer.succeed(
     diagnostic: unused
   })
 )
-const run = <A, E>(task: Effect.Effect<A, E, ResidentStartup>) =>
+const run = <A, E>(task: Effect.Effect<A, E, ResidentStartup | FileSystem.FileSystem>) =>
   Effect.runPromise(
     task.pipe(
       Effect.provide(startup),
+      Effect.provide(NodeFileSystem.layer),
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ REVIEW_DEMO_BUDGET_PATH: "/trace" })))
     )
   )
@@ -153,7 +158,7 @@ it("admits the exact controlled Codex observation while keeping native output qu
     undefined,
     true
   )
-  expect(ports.trace).toHaveBeenCalledWith("/trace", observation.root, observation.advicee, { kind: "edit" })
+  expect(ports.trace).not.toHaveBeenCalled()
   expect(ports.activity).not.toHaveBeenCalled()
 })
 it.each(["uncontrolled", "dispatch-failure", "admission-failure"])(
@@ -228,3 +233,10 @@ it.each([undefined, null, "ready", {}, { _tag: "other", value: {} }, { _tag: "Di
     expect(dispatcher().isDirectEventReady(value)).toBe(false)
   }
 )
+it("records a demo edit only for the actual session.ts candidate", async () => {
+  ports.observation.mockReturnValue(
+    Effect.succeed({ ...observation, candidates: [{ operation: "update", path: "session.ts", addedLines: [] }] })
+  )
+  await codex()
+  expect(ports.trace).toHaveBeenCalledWith("/trace", observation.root, observation.advicee, { kind: "edit" })
+})

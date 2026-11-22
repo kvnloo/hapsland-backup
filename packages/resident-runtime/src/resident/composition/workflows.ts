@@ -38,6 +38,7 @@ type RuntimePorts = {
 
 const makeResidentReviewWorkflows = (resources: ResidentResources, ports: RuntimePorts) => {
   const {
+    residentRecordDemoTrace,
     runtimeConfiguration,
     reviewSettings,
     residentLedger,
@@ -121,6 +122,7 @@ const makeResidentReviewWorkflows = (resources: ResidentResources, ports: Runtim
     releaseDelivery: (token) => delivery.releaseDelivery(token)
   })
   const delivery = makeResidentDelivery({
+    residentRecordDemoTrace,
     get residentExpirePending() {
       return workLifecycle.residentExpirePending
     },
@@ -223,6 +225,7 @@ const makeResidentReviewWorkflows = (resources: ResidentResources, ports: Runtim
     runtimeConfiguration
   })
   const evaluation = makeResidentEvaluation({
+    residentRecordDemoTrace,
     lifetime,
     residentRecordAnalytics: reviewObservation.residentRecordAnalytics,
     residentObserveReviewServiceRequest: reviewObservation.residentObserveReviewServiceRequest,

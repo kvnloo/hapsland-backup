@@ -82,7 +82,8 @@
     "@hapsland/runtime-inputs": "workspace:*",
     "@hapsland/source-analysis": "workspace:*",
     "effect": "catalog:",
-    "@hapsland/credential-storage": "workspace:*"
+    "@hapsland/credential-storage": "workspace:*",
+    "@effect/platform-node": "catalog:"
   },
   "scripts": {
     "build": "node ../../scripts/compile-package.mjs",

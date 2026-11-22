@@ -3,7 +3,6 @@ import * as Effect from "effect/Effect"
 import { appendFile } from "node:fs/promises"
 import type { evaluatePrepared } from "@hapsland/review-execution/direct-event/pipeline"
 import { type ControlledDecisionModelOptions } from "@hapsland/review-execution/review-execution/controlled-decision-model"
-import { recordDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
 import { residentAdapter } from "../../adapter-error.ts"
 import { logicalBytes } from "../../state/encoded-size.ts"
 import { type EvaluationContext, type EvaluationResult } from "./context.ts"
@@ -60,6 +59,7 @@ export const settleEvaluatedReviewUnit = Effect.fn("ResidentRuntime.settleEvalua
     | "residentNow"
     | "residentObserveReviewServiceRequest"
     | "residentRecordAnalytics"
+    | "residentRecordDemoTrace"
     | "residentRecordJoinedOutcomes"
     | "residentReleaseReuseClaim"
     | "residentReleaseUnit"
@@ -133,16 +133,6 @@ export const settleEvaluatedReviewUnit = Effect.fn("ResidentRuntime.settleEvalua
   })
   if (yield* discardSettledUnit()) return
   const recordEvaluatedReviewUnit = Effect.fn("ResidentRuntime.recordEvaluatedReviewUnit")(function* () {
-    recordDemoTrace(
-      context.job.dispatch.demoBudgetPath,
-      context.job.observation.root,
-      context.job.observation.advicee,
-      {
-        kind: "terminal",
-        ...(context.job.sourceHash === undefined ? {} : { sourceHash: context.job.sourceHash }),
-        state: result.findings.length === 0 ? "clear" : "findings"
-      }
-    )
     const evaluation = { prepared: context.job.prepared, findings: result.findings }
     yield* context.deps.residentReuse.put(context.job.partition, context.job.evaluationKey, evaluation)
     yield* context.deps.residentReleaseReuseClaim(context.job.evaluationKey)
@@ -158,6 +148,17 @@ export const settleEvaluatedReviewUnit = Effect.fn("ResidentRuntime.settleEvalua
     return evaluation
   })
   const evaluation = yield* recordEvaluatedReviewUnit()
+  yield* context.deps.residentRecordDemoTrace(
+    context.job.dispatch.demoBudgetPath,
+    context.job.observation.root,
+    context.job.observation.advicee,
+    {
+      kind: "terminal",
+      ...(context.job.sourceHash === undefined ? {} : { sourceHash: context.job.sourceHash }),
+      state: result.findings.length === 0 ? "clear" : "findings"
+    }
+  )
+
   const recordOutcome = Effect.fn("ResidentRuntime.recordControlledOutcome")(function* () {
     if (controlled?.outcomePath === undefined) return
     const { sessionId, turnId, toolUseId, subagentId } = context.job.observation.advicee

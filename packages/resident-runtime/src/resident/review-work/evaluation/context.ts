@@ -1,3 +1,4 @@
+import type { DemoTraceRecorder } from "@hapsland/activity-observation/activity/demo-trace"
 import type * as HttpClient from "effect/http/HttpClient"
 import type { AnalyticsKind } from "@hapsland/activity-observation/activity/analytics"
 import type { makeResidentInspection } from "../../inspection/observer.ts"
@@ -27,6 +28,7 @@ import type { resolveEvaluationCredentials } from "./authorization.ts"
 import type { evaluateAuthorizedUnit } from "./request.ts"
 
 export type Dependencies = {
+  readonly residentRecordDemoTrace: DemoTraceRecorder
   readonly lifetime: string
   readonly residentRecordAnalytics: (
     job: Pick<Job, "dispatch" | "observation"> & { readonly analyticsEnabled?: boolean },

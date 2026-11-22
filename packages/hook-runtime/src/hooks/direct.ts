@@ -1,3 +1,4 @@
+import type * as FileSystem from "effect/FileSystem"
 import { resolve } from "node:path"
 import { nativeSelection } from "@hapsland/native-observation/direct-event/selection"
 import { candidateRootObservation } from "@hapsland/native-observation/direct-event/target-observation"
@@ -19,7 +20,7 @@ import type { ClaudeHostOutput } from "@hapsland/delivery-output/direct-event/cl
 import type { ResidentControlledOptions } from "@hapsland/resident-transport/resident/protocol"
 import { hookMonotonicMillis } from "@hapsland/resident-transport/resident/hook-clock"
 import { recordActivity } from "@hapsland/activity-observation/activity/status"
-import { recordDemoTrace } from "@hapsland/activity-observation/activity/demo-trace"
+import { recordDemoTraceEffect } from "@hapsland/activity-observation/activity/demo-trace"
 import {
   recordNativeMetadataEffect,
   admitObservationEffect,
@@ -68,9 +69,10 @@ export const makeDirectHookDispatch = (options: DirectHookOptions) => {
   const recordCodexObservationTrace = Effect.fn("CodexHook.recordEditTrace")(function* (
     observation: DirectObservation | undefined
   ) {
-    if (observation === undefined) return
+    if (observation === undefined || !observation.candidates.some((candidate) => candidate.path === "session.ts"))
+      return
     const path = yield* Config.option(Config.NonEmptyString("REVIEW_DEMO_BUDGET_PATH"))
-    recordDemoTrace(Option.getOrUndefined(path), observation.root, observation.advicee, { kind: "edit" })
+    yield* recordDemoTraceEffect(Option.getOrUndefined(path), observation.root, observation.advicee, { kind: "edit" })
   })
   const admitCodexHookObservation = Effect.fn("CodexHook.admitObservation")(function* (
     observation: DirectObservation,
@@ -234,7 +236,7 @@ export const makeDirectHookDispatch = (options: DirectHookOptions) => {
     statePath: string,
     activityPath: string,
     userConfigPath: string | undefined
-  ): Effect.Effect<DirectHookDispatch, unknown, ResidentStartup> =>
+  ): Effect.Effect<DirectHookDispatch, unknown, ResidentStartup | FileSystem.FileSystem> =>
     Effect.gen(function* () {
       if (!isCodexNativeApplyPatch(nativeEvent)) return { handled: false } as const
       const reply = yield* adaptCodexReply(nativeEvent, agentRuntimeVersion)

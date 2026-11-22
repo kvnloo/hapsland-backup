@@ -1,4 +1,5 @@
 import { readActivity } from "@hapsland/activity-observation/activity/status"
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
 import { makeDirectHookDispatch } from "../../packages/hook-runtime/src/hooks/direct.ts"
 import { monotonicNow, hookMonotonicMillis } from "@hapsland/resident-transport/resident/hook-clock"
 import {
@@ -731,6 +732,7 @@ it.each([
           join(root, "absent-user")
         )
         .pipe(
+          Effect.provide(NodeFileSystem.layer),
           Effect.provide(
             ConfigProvider.layer(
               ConfigProvider.fromUnknown({ REVIEW_RESIDENT_DIR: paths.directory, REVIEW_CREDENTIAL_STATE_PATH: root })

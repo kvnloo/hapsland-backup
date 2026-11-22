@@ -19,6 +19,7 @@ import { loadReviewSettings, type ReviewSettings } from "@hapsland/review-defini
 import { resolveCredential, type CredentialResolution } from "@hapsland/credential-storage/credentials/owner"
 import {
   installCodexIntegration,
+  inspectCodexInstallation,
   previewCodexInstallation,
   type InstallationRequest
 } from "./codex-installation/index.ts"
@@ -719,8 +720,8 @@ const shouldApplyInstallation = (
   return status === "partial" || (status === "preview" && !installed)
 }
 
-const optionalNextSteps = (request: SetupRequest, status: string) =>
-  status === "completed" && request.scope.review === "enabled" && request.host === "codex"
+const optionalNextSteps = (request: SetupRequest, hooksReady: boolean) =>
+  request.scope.review === "enabled" && request.host === "codex" && hooksReady
     ? {
         optionalNextSteps: [
           {
@@ -776,7 +777,12 @@ const setupInstallation = Effect.fn("Setup.installation")(function* (request: Se
     installed,
     progress
   )
-  return { installed, hostHome, hostName }
+  let hooksReady = false
+  if (installed && request.host === "codex") {
+    const inspection = yield* inspectCodexInstallation(installationRequest(request))
+    hooksReady = "hooksReady" in inspection && inspection.hooksReady === true
+  }
+  return { installed, hostHome, hostName, hooksReady }
 })
 
 const setupStatus = (request: SetupRequest, installed: boolean, progress: SetupProgress) => {
@@ -916,7 +922,7 @@ export const runSetup = Effect.fn("Setup.run")(function* (request: SetupRequest,
   const progress: SetupProgress = { stages, actions, completed, pending }
   const rulesPreview = yield* previewSetupRules(request, options)
   yield* validateRulesAuthorization(request, rulesPreview)
-  const { installed, hostHome, hostName } = yield* setupInstallation(request, progress)
+  const { installed, hostHome, hostName, hooksReady } = yield* setupInstallation(request, progress)
   yield* options.onProgress?.({ stages: [...stages] }) ?? Effect.void
   yield* setupRules(request, options, rulesPreview, installed, progress)
   yield* options.onProgress?.({ stages: [...stages] }) ?? Effect.void
@@ -941,7 +947,7 @@ export const runSetup = Effect.fn("Setup.run")(function* (request: SetupRequest,
     completed,
     pending,
     actions: actions.slice(0, 4),
-    ...optionalNextSteps(request, status)
+    ...optionalNextSteps(request, hooksReady)
   }
 })
 

@@ -250,6 +250,7 @@
       "name": "@hapsland/resident-runtime",
       "version": "0.1.0",
       "dependencies": {
+        "@effect/platform-node": "catalog:",
         "@hapsland/activity-observation": "workspace:*",
         "@hapsland/canonical-policy": "workspace:*",
         "@hapsland/credential-storage": "workspace:*",
@@ -399,6 +400,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@effect/ai-typesafe": "catalog:",
+        "@effect/platform-node": "catalog:",
         "@effect/vitest": "catalog:",
         "@hapsland/activity-observation": "workspace:*",
         "@hapsland/administration": "workspace:*",

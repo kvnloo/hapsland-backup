@@ -30,6 +30,8 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { prepareTestPackage, type TestPackage } from "../../scripts/test-support/test-package.ts"
 import { spawnSync } from "../../scripts/test-harness/process.mjs"
 import { afterEach, describe, expect, it } from "vitest"
+import { runFirstReviewDemo } from "@hapsland/administration/onboarding/first-review-demo"
+import { diagnoseInstalledIntegration } from "@hapsland/administration/onboarding/doctor"
 import {
   inspectCodexInstallation,
   installCodexIntegration,
@@ -1923,7 +1925,29 @@ it("installs MCP and the canonical companion skill without hooks, preserves sett
     readFileSync(join(process.cwd(), "skills/hapsland-rule-authoring/SKILL.md"), "utf8")
   )
   const inspect = await runInstallation(inspectCodexInstallation({ codexHome: home, codexExecutable: bin }))
-  expect(inspect).toMatchObject({ installed: true })
+  expect(inspect).toMatchObject({ installed: true, hooksReady: false, integrations: { hooks: false, mcp: true } })
+  const demoState = join(root, "demo-state")
+  const demo = await runInstallation(
+    runFirstReviewDemo(
+      { version: 1, operation: "demo", selection: "preview", codexHome: home, codexExecutable: bin },
+      { statePath: demoState }
+    )
+  )
+  expect(demo.status).toBe("conflict")
+  expect(existsSync(demoState)).toBe(false)
+  const doctor = await runInstallation(
+    diagnoseInstalledIntegration({
+      installation: { codexHome: home, codexExecutable: bin },
+      repository: { stage: "file-selection", status: "ready", observed: "fixture" },
+      credential: { stage: "credential-accessibility", status: "ready", observed: "fixture" }
+    })
+  )
+  expect(doctor.checks.find((check) => check.stage === "configuration-ownership")).toMatchObject({
+    status: "ready",
+    observed: { integrations: { hooks: false, mcp: true } }
+  })
+  expect(doctor.checks.find((check) => check.stage === "resident")).toMatchObject({ status: "ready" })
+  expect(doctor.nextSteps.some((step) => step.action.includes("hook"))).toBe(false)
   const removal = await invoke({ operation: "uninstall", codexHome: home, codexExecutable: bin })
   const removalProposal = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(removal.proposal)
   const removed = await invoke({
