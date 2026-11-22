@@ -1,11 +1,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, realpathSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import { hostModuleGraph } from "./host-module-graph.mjs"
 function fixture(work) {
-  const root = mkdtempSync(resolve(tmpdir(), "hapsland-host-graph-"))
+  const root = realpathSync(mkdtempSync(resolve(tmpdir(), "hapsland-host-graph-")))
   const packages = new Map(
     ["entry", "shared"].map((name) => [
       name,

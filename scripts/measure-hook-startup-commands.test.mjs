@@ -1,12 +1,12 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs"
+import { mkdtempSync, realpathSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { installedCommands } from "./measure-hook-startup-commands.mjs"
 
 const fixture = () => {
-  const prefix = mkdtempSync(join(tmpdir(), "startup-commands-"))
+  const prefix = realpathSync(mkdtempSync(join(tmpdir(), "startup-commands-")))
   const root = join(prefix, "node_modules/@hapsland/hapsland")
   const binaries = join(root, "dist/bin", `${process.platform}-${process.arch}`)
   mkdirSync(binaries, { recursive: true })

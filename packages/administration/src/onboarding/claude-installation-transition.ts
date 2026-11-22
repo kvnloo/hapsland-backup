@@ -51,10 +51,10 @@ export const claudeTransitionHash = (value: unknown): string =>
     .digest("hex")
 export const CLAUDE_OWNED_EVENTS = ["PostToolUse", "PreToolUse", "Stop", "SubagentStop", "UserPromptSubmit"] as const
 export const CLAUDE_MARKERS = ["--review-tool-owned=claude-v1", "--review-tool-composed-owned=claude-v1"]
+const HookConfiguration = Schema.Record(Schema.String, Schema.Array(Schema.Unknown))
 export const claudeOwnedHooks = (settings: Record<string, unknown>, event: string): readonly unknown[] => {
   if (settings.hooks === undefined) return []
-  if (!object(settings.hooks)) throw new Error("Claude hooks must be an object")
-  const groups = settings.hooks[event]
+  const groups = Schema.decodeUnknownSync(HookConfiguration)(settings.hooks)[event]
   if (groups === undefined) return []
   if (!Array.isArray(groups)) throw new Error(`Claude ${event} hooks must be an array`)
   return groups.flatMap((group) => {

@@ -31,6 +31,9 @@ export async function runBuildProcess(command, args, { cwd, env, timeout = 30000
       return true
     } catch (error) {
       if (error.code === "ESRCH") return false
+      // Darwin teardown can briefly deny a group probe before it becomes ESRCH.
+      // Permission ambiguity never proves shutdown; the existing join/deadline owns it.
+      if (error.code === "EPERM") return true
       throw error
     }
   }

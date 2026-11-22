@@ -200,6 +200,64 @@ test("successful wrapper waits for its real descendant natural cleanup before re
     await rm(root, { recursive: true, force: true })
   }
 })
+test("permission-ambiguous group observation waits for actual natural cleanup", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "hapsland-permission-join-"))
+  const evidence = join(root, "cleanup.txt")
+  const originalKill = process.kill.bind(process)
+  let group
+  let ambiguous = false
+  t.after(async () => {
+    t.mock.restoreAll()
+    if (group !== undefined) {
+      try {
+        originalKill(-group, "SIGKILL")
+      } catch (cause) {
+        if (cause.code !== "ESRCH") throw cause
+      }
+    }
+    await rm(root, { recursive: true, force: true })
+  })
+  t.mock.method(process, "kill", (pid, signal) => {
+    if (pid === -group && signal === 0 && !ambiguous) {
+      ambiguous = true
+      throw Object.assign(new Error("permission-ambiguous observation"), { code: "EPERM" })
+    }
+    return originalKill(pid, signal)
+  })
+  const result = await run(teardownScript(evidence, 30), {
+    onSpawn: (identity) => {
+      group = identity.group
+    }
+  })
+  assert.equal(result.code, 0)
+  assert.equal(ambiguous, true)
+  assert.equal(await readFile(evidence, "utf8"), "natural cleanup")
+  assert.throws(() => originalKill(-group, 0), { code: "ESRCH" })
+})
+test("persistent permission ambiguity cannot prove shutdown or release custody", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "hapsland-unresolved-permission-"))
+  const originalKill = process.kill.bind(process)
+  let group
+  t.mock.method(process, "kill", (pid, signal) => {
+    if (pid === -group && signal === 0)
+      throw Object.assign(new Error("permission-ambiguous observation"), { code: "EPERM" })
+    return originalKill(pid, signal)
+  })
+  try {
+    await assert.rejects(
+      run("process.exit(0)", {
+        onSpawn: (identity) => {
+          group = identity.group
+        }
+      }),
+      { groupUnresolved: true }
+    )
+    assert.throws(() => originalKill(-group, 0), { code: "ESRCH" })
+  } finally {
+    t.mock.restoreAll()
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test("persistent descendant after join grace rejects and is physically drained", async () => {
   const root = await mkdtemp(join(tmpdir(), "hapsland-persistent-join-"))

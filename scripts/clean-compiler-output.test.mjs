@@ -1,11 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from "node:fs"
+import { mkdtempSync, realpathSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import { cleanCompilerOutput } from "./clean-compiler-output.mjs"
 const fixture = (t) => {
-  const root = mkdtempSync(resolve(tmpdir(), "hapsland-compiler-clean-"))
+  const root = realpathSync(mkdtempSync(resolve(tmpdir(), "hapsland-compiler-clean-")))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const owner = resolve(root, "packages/owner")
   mkdirSync(owner, { recursive: true })
