@@ -80,7 +80,9 @@ if (sourceCodexHome === undefined) {
   throw new Error("live milestone requires REVIEW_LIVE_CODEX_HOME")
 }
 
-const runnerRoot = await realpath(await mkdtemp(join(tmpdir(), "review-first-live-runner-")))
+const runnerRoot = await realpath(
+  await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "review-first-live-runner-"))
+)
 const onInterrupt = () => {
   interrupted = true
 }
@@ -114,15 +116,21 @@ let live
 let artifactSha256
 let codexVersion
 let installed = false
+let cliResolvedInsideInstalledArtifact = false
 let setup
+let stage = "archive"
+let failedStage
+let cleanupFailure
+let cleanupFailureStage
+let residentCleanup = { status: "not-observed" }
+let privateDataRemoved = true
 
 const invoke = async (input, timeoutMs = 10_000, expected = [0]) => {
-  const result = requireExit(
-    await run(cli, ["--demo"], { env: runnerEnv, input, timeoutMs }),
-    `installed CLI ${input.selection}`,
-    expected
-  )
-  return { ...result, output: parseJson(result, `installed CLI ${input.selection}`) }
+  const result = await run(cli, ["--demo"], { env: runnerEnv, input, timeoutMs })
+  const observed = { ...result, output: parseJson(result, `installed CLI ${input.selection}`) }
+  if (input.selection === "live") live = observed
+  requireExit(result, `installed CLI ${input.selection}`, expected)
+  return observed
 }
 
 try {
@@ -166,8 +174,10 @@ try {
   tarballPath = join(runnerRoot, "reviewed.tgz")
   await writeFile(tarballPath, archiveBytes, { mode: 0o600, flag: "wx" })
   // Verify exact private archive bytes before opening the read-only authentication source.
+  stage = "authentication-source"
   await writeFile(join(codexHome, "auth.json"), await readFile(join(sourceCodexHome, "auth.json")), { mode: 0o600 })
 
+  stage = "package-installation"
   requireExit(
     await run(
       "npm",
@@ -198,6 +208,7 @@ try {
   if (packageManifest.name !== "@hapsland/hapsland") {
     throw new Error("installed CLI package identity did not match the packed release")
   }
+  cliResolvedInsideInstalledArtifact = true
 
   const versionResult = requireExit(
     await run("codex", ["--version"], { env: runnerEnv, timeoutMs: 10_000 }),
@@ -215,6 +226,7 @@ try {
   )
   const installPreview = parseJson(installPreviewRun, "installed CLI install preview")
   requireCleanInstallationPreview(installPreview)
+  stage = "setup"
   const setupRequest = {
     version: 1,
     operation: "setup",
@@ -239,6 +251,7 @@ try {
   requireCreatedSetup(setup)
   installed = true
 
+  stage = "demo-preview"
   preview = await invoke({ version: 1, operation: "demo", selection: "preview", codexHome, codexExecutable: "codex" })
   if (preview.output?.status !== "preview") throw new Error("installed release did not produce an offline demo preview")
   if (
@@ -251,11 +264,13 @@ try {
   }
 
   if (supervisedTrust) {
+    stage = "native-trust"
     const disposableRoot = preview.output.demo?.disposableRoot
     if (typeof disposableRoot !== "string") throw new Error("demo preview omitted its disposable root")
     await establishNativeTrust(codexHome, disposableRoot, runnerEnv)
   }
 
+  stage = "live-demo"
   live = await invoke(
     {
       version: 1,
@@ -269,11 +284,14 @@ try {
     195_000,
     [0, 6]
   )
+} catch {
+  failedStage = stage
 } finally {
   cleaningUp = true
-  let cleanupFailure
+  let cleanupStage = "demo-cleanup"
   const retainCleanupFailure = (cause) => {
     cleanupFailure ??= cause
+    cleanupFailureStage ??= cleanupStage
   }
   if (
     preview?.output?.demo?.id !== undefined &&
@@ -285,6 +303,7 @@ try {
     )
   }
   if (installed && cli !== undefined) {
+    cleanupStage = "installation-cleanup"
     await (async () => {
       const uninstallPreviewRun = requireExit(
         await run(cli, ["--uninstall"], { env: runnerEnv, input: { version: 1, operation: "uninstall", codexHome } }),
@@ -307,20 +326,41 @@ try {
       }
     })().catch(retainCleanupFailure)
   }
-  await stopScopedResident(stateRoot).catch(retainCleanupFailure)
+  cleanupStage = "resident-cleanup"
+  await stopScopedResident(stateRoot)
+    .then((result) => {
+      residentCleanup = result
+    })
+    .catch((cause) => {
+      residentCleanup = { status: "failed" }
+      retainCleanupFailure(cause)
+    })
+  cleanupStage = "private-data-cleanup"
+  const retainPrivateCleanupFailure = (cause) => {
+    privateDataRemoved = false
+    retainCleanupFailure(cause)
+  }
   for (const directory of [codexHome, appHome, installPrefix, repository])
-    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(retainCleanupFailure)
-  for (const name of await readdir(stateRoot).catch(() => []))
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(
+      retainPrivateCleanupFailure
+    )
+  const privateInventory = async (directory) =>
+    readdir(directory).catch((cause) => {
+      if (cause.code !== "ENOENT") retainPrivateCleanupFailure(cause)
+      return []
+    })
+  for (const name of await privateInventory(stateRoot))
     if (name !== "resident")
-      await rm(join(stateRoot, name), { recursive: true, force: true }).catch(retainCleanupFailure)
-  for (const name of await readdir(runnerRoot).catch(() => []))
-    if (name !== "state") await rm(join(runnerRoot, name), { recursive: true, force: true }).catch(retainCleanupFailure)
+      await rm(join(stateRoot, name), { recursive: true, force: true }).catch(retainPrivateCleanupFailure)
+  for (const name of await privateInventory(runnerRoot))
+    if (name !== "state")
+      await rm(join(runnerRoot, name), { recursive: true, force: true }).catch(retainPrivateCleanupFailure)
   if (cleanupFailure === undefined)
-    await rm(runnerRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(retainCleanupFailure)
+    await rm(runnerRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(
+      retainPrivateCleanupFailure
+    )
   process.removeListener("SIGINT", onInterrupt)
   process.removeListener("SIGTERM", onInterrupt)
-  // oxlint-disable-next-line no-unsafe-finally -- Uncertain cleanup must fail the witness and retain its fixture evidence.
-  if (cleanupFailure !== undefined) throw cleanupFailure
 }
 
 const result = live?.output
@@ -337,18 +377,18 @@ const evidence = {
   package: {
     source: registryArtifact ? "npm-registry-installation" : "reviewed-local-archive-installation",
     artifactSha256,
-    cliResolvedInsideInstalledArtifact: true
+    cliResolvedInsideInstalledArtifact
   },
   selection: {
     explicitLive: true,
-    syntheticOnly: preview.output.demo.syntheticOnly === true,
-    deliberatelyFlawed: preview.output.demo.disclosure.deliberatelyFlawed === true,
-    repairPrescribed: preview.output.demo.disclosure.repairPrescribed === true,
-    exactDisposableSelection: typeof preview.output.authorization.selectionDigest === "string",
+    syntheticOnly: preview?.output?.demo?.syntheticOnly === true,
+    deliberatelyFlawed: preview?.output?.demo?.disclosure?.deliberatelyFlawed === true,
+    repairPrescribed: preview?.output?.demo?.disclosure?.repairPrescribed === true,
+    exactDisposableSelection: typeof preview?.output?.authorization?.selectionDigest === "string",
     supervisedNativeTrust: supervisedTrust,
     hostSandboxMode: runnerEnv.REVIEW_DEMO_TEST_SANDBOX_BYPASS === "1" ? "test-bypass" : "workspace-write",
     hostModel: "Codex default",
-    budgets: preview.output.budget
+    budgets: preview?.output?.budget
   },
   setup: {
     ordinaryDefaults: true,
@@ -357,7 +397,16 @@ const evidence = {
     rules: setup?.stages?.find((stage) => stage.stage === "rules")?.status
   },
   reviewLatencyMs: result?.reviewLatencyMs ?? null,
-  status: result?.status ?? "incomplete",
+  status: failedStage !== undefined || cleanupFailure !== undefined ? "failed" : (result?.status ?? "incomplete"),
+  executionStatus: result?.status ?? "unavailable",
+  ...(failedStage === undefined && cleanupFailureStage === undefined
+    ? {}
+    : {
+        failure: {
+          ...(failedStage === undefined ? {} : { executionStage: failedStage }),
+          ...(cleanupFailureStage === undefined ? {} : { cleanupStage: cleanupFailureStage })
+        }
+      }),
   stages: result?.evidence ?? {
     completion: "incomplete",
     submission: "unavailable",
@@ -367,20 +416,24 @@ const evidence = {
     repair: "not-validated",
     followUpReview: "unavailable"
   },
-  cleanup: result?.cleanup ?? { disposableRootRemoved: false },
+  cleanup: { ...(result?.cleanup ?? { disposableRootRemoved: false }), resident: residentCleanup, privateDataRemoved },
   retained: { source: false, providerResponse: false, credential: false, paths: false, digests: false }
 }
 
 if (writeEvidence) {
-  const directory = resolve(projectRoot, ".test-runs/first-review")
-  await mkdir(directory, { recursive: true })
-  const version = /^codex-cli (\d+\.\d+\.\d+)$/.exec(codexVersion ?? "")?.[1]
-  if (version === undefined) throw new Error("installed first-review Codex version is unavailable")
-  await writeFile(
-    resolve(directory, `live-installed-codex-${version}-supervised.json`),
-    `${JSON.stringify(evidence, null, 2)}\n`,
-    { mode: 0o600 }
-  )
+  try {
+    const directory = resolve(projectRoot, ".test-runs/first-review")
+    await mkdir(directory, { recursive: true })
+    const version = /^codex-cli (\d+\.\d+\.\d+)$/.exec(codexVersion ?? "")?.[1] ?? "unobserved"
+    await writeFile(
+      resolve(directory, `live-installed-codex-${version}-supervised.json`),
+      `${JSON.stringify(evidence, null, 2)}\n`,
+      { mode: 0o600 }
+    )
+  } catch {
+    evidence.status = "failed"
+    evidence.failure = { ...evidence.failure, reportingStage: "evidence-write" }
+  }
 }
 process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`)
 if (evidence.status !== "passed") process.exitCode = 1

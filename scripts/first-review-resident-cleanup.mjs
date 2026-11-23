@@ -84,28 +84,35 @@ export const stopScopedResident = async (stateRoot, dependencies = {}) => {
     throw new ResidentCleanupLimitation("scoped resident owner identity was invalid; no process was signaled")
   }
   const probe = dependencies.probe ?? probeScopedResident
+  const signal = dependencies.signal ?? process.kill
   let live
   try {
     live = await probe(directory)
   } catch {
+    try {
+      signal(owner.pid, 0)
+    } catch (cause) {
+      if (cause.code === "ESRCH") return { status: "already-stopped" }
+    }
     throw new ResidentCleanupLimitation("scoped resident identity was unavailable; no process was signaled")
   }
   if (live.pid !== owner.pid || live.lifetime !== owner.lifetime) {
     throw new ResidentCleanupLimitation("scoped resident owner identity changed; no process was signaled")
   }
-  const signal = dependencies.signal ?? process.kill
   const wait =
     dependencies.wait ?? ((milliseconds) => new Promise((resolveWait) => setTimeout(resolveWait, milliseconds)))
   try {
     signal(owner.pid, "SIGTERM")
-  } catch {
-    return { status: "already-stopped" }
+  } catch (cause) {
+    if (cause.code === "ESRCH") return { status: "already-stopped" }
+    throw new ResidentCleanupLimitation("scoped resident termination could not be established")
   }
   for (let attempt = 0; attempt < 50; attempt += 1) {
     try {
       signal(owner.pid, 0)
-    } catch {
-      return { status: "stopped" }
+    } catch (cause) {
+      if (cause.code === "ESRCH") return { status: "stopped" }
+      throw new ResidentCleanupLimitation("scoped resident shutdown could not be established")
     }
     await wait(100)
   }

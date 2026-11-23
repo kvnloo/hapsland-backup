@@ -1,4 +1,15 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  chmodSync
+} from "node:fs"
+import { bunExecutable } from "@hapsland/runtime-environment/runtime/bun-runtime"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -13,11 +24,96 @@ import {
 } from "../../scripts/first-review-live-runner-policy.mjs"
 const roots: string[] = []
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) {
+    const state = join(root, "state")
+    if (existsSync(state)) chmodSync(state, 0o700)
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 const root = fileURLToPath(new URL("../..", import.meta.url))
 const runner = join(root, "scripts", "run-first-review-live-milestone.mjs")
 describe("first-review live runner provenance policy", () => {
+  it.each(["unknown-owner", "socket-bindings", "unreadable-state"])(
+    "preserves live stages and owns reachable endpoints: %s",
+    (mode) => {
+      const temporary = realpathSync(mkdtempSync(join(tmpdir(), "live-cleanup-evidence-")))
+      roots.push(temporary)
+      const authHome = join(temporary, "auth"),
+        tempHome = join(temporary, "fixtures"),
+        bin = join(temporary, "bin")
+      for (const path of [authHome, tempHome, bin]) mkdirSync(path)
+      writeFileSync(join(authHome, "auth.json"), "{}")
+      const archive = join(temporary, "candidate.tgz")
+      writeFileSync(archive, "synthetic fixture archive")
+      const expected = createHash("sha256").update(readFileSync(archive)).digest("hex")
+      const cli = join(temporary, "fixture-cli.cjs")
+      const capture = join(temporary, "capture.json")
+      writeFileSync(
+        cli,
+        `#!${process.execPath}
+const fs=require('node:fs');const path=require('node:path');const input=JSON.parse(fs.readFileSync(0,'utf8'));let output;
+const proposal={digest:'a'.repeat(64)};
+if(process.argv.includes('--install-preview'))output={status:'preview',installed:false,proposal};
+else if(process.argv.includes('--setup'))output=input.installProposalDigest?{status:'needs-user-action',stages:['installation','rules','repository','credential'].map(stage=>({stage,status:'complete'}))}:{actions:[{code:'approve-installation',authorization:{installProposalDigest:'a'.repeat(64)}},{code:'approve-default-rules',authorization:{rulesProposalDigest:'b'.repeat(64)}}]};
+else if(process.argv.includes('--uninstall'))output=input.proposalDigest?{status:'uninstalled'}:{status:'preview',proposal};
+else if(input.selection==='preview')output={status:'preview',paidVerificationPerformed:false,budget:{sourceBytes:4096,providerCalls:2,timeMs:180000},demo:{id:'fixture',syntheticOnly:true,disclosure:{deliberatelyFlawed:true,repairPrescribed:true}},authorization:{selectionDigest:'c'.repeat(64)}};
+else {const directory=process.env.REVIEW_RESIDENT_DIR;fs.mkdirSync(directory,{recursive:true});fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({runtimeDirectory:directory}));
+if(${JSON.stringify(mode)}!=='socket-bindings'){fs.writeFileSync(path.join(directory,'owner.json'),JSON.stringify({pid:${process.pid},lifetime:'fixture-owner'}));if(${JSON.stringify(mode)}==='unreadable-state'){fs.mkdirSync(path.join(directory,'../activity'));fs.writeFileSync(path.join(directory,'../activity/private.json'),'synthetic private data');fs.chmodSync(path.join(directory,'..'),0o100);}}
+else {const checks=${JSON.stringify([process.execPath, bunExecutable()])}.map(runtime=>{const code="const s=require('node:net').createServer();s.on('error',()=>process.exit(2));s.listen("+JSON.stringify(path.join(directory,'resident.sock'))+",()=>s.close(()=>process.exit(0)));";return require('node:child_process').spawnSync(runtime,['-e',code],{timeout:2000}).status});fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({runtimeDirectory:directory,checks}));if(checks.some(status=>status!==0))process.exit(3);}
+output={status:'inconclusive',evidence:{completion:'completed',submission:'submitted',modelReaction:'not-observed',followUpReview:'not-observed',providerCalls:0},cleanup:{disposableRootRemoved:true}};}
+console.log(JSON.stringify(output));
+`
+      )
+      writeFileSync(join(bin, "codex"), "#!/bin/sh\nprintf 'codex-cli 0.155.1\\n'\n", { mode: 0o700 })
+      writeFileSync(
+        join(bin, "npm"),
+        `#!${process.execPath}
+const fs=require('node:fs');const path=require('node:path');const prefix=process.argv[process.argv.indexOf('--prefix')+1];const root=path.join(prefix,'node_modules/@hapsland/hapsland');fs.mkdirSync(path.join(root,'bin'),{recursive:true});fs.mkdirSync(path.join(prefix,'node_modules/.bin'),{recursive:true});fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'@hapsland/hapsland'}));const cli=path.join(root,'bin/cli.cjs');fs.copyFileSync(${JSON.stringify(cli)},cli);fs.chmodSync(cli,0o700);fs.symlinkSync(cli,path.join(prefix,'node_modules/.bin/hapsland'));
+`,
+        { mode: 0o700 }
+      )
+      const result = spawnSync(
+        process.execPath,
+        [runner, "--live", `--archive=${archive}`, `--expected-sha256=${expected}`],
+        {
+          cwd: root,
+          encoding: "utf8",
+          timeout: 15000,
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            TMPDIR: tempHome,
+            REVIEW_LIVE_CODEX_HOME: authHome
+          }
+        }
+      )
+      expect(result.status).toBe(1)
+      const observed = JSON.parse(readFileSync(capture, "utf8"))
+      const fixtureRoot = join(observed.runtimeDirectory, "../..")
+      roots.push(fixtureRoot)
+      const evidence = JSON.parse(result.stdout)
+      expect(evidence).toMatchObject({
+        status: mode !== "socket-bindings" ? "failed" : "inconclusive",
+        executionStatus: "inconclusive",
+        stages: { completion: "completed", submission: "submitted", modelReaction: "not-observed" },
+        cleanup: {
+          resident: { status: mode !== "socket-bindings" ? "failed" : "absent" },
+          privateDataRemoved: mode !== "unreadable-state"
+        }
+      })
+      if (mode !== "socket-bindings") {
+        expect(readdirSync(fixtureRoot)).toEqual(["state"])
+        if (mode === "unreadable-state") {
+          chmodSync(join(fixtureRoot, "state"), 0o700)
+          expect(existsSync(join(fixtureRoot, "state/activity/private.json"))).toBe(true)
+        }
+      } else {
+        expect(observed.checks).toEqual([0, 0])
+        expect(existsSync(fixtureRoot)).toBe(false)
+      }
+      expect(result.stdout).not.toContain(temporary)
+    }
+  )
   it("strips ambient Hapsland test and installation selectors while preserving authorized live inputs", () => {
     const env = firstReviewLiveEnvironment(
       {
