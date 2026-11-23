@@ -39,12 +39,21 @@ async function fixture(t) {
 test("tooling alias expands the explicit inventory and permits a narrower owner selection", async () => {
   const root = fileURLToPath(new URL("../../", import.meta.url))
   const all = await focusedSelection(root, ["--tooling"])
-  assert.deepEqual(all.nodeFiles, toolingTestFiles)
-  assert.deepEqual(all.vitestFiles, [])
+  assert.deepEqual(
+    all.nodeFiles,
+    toolingTestFiles.filter((file) => file.endsWith(".mjs"))
+  )
+  assert.deepEqual(all.vitestFiles, ["scripts/coverage-provider.test.mts"])
   assert.deepEqual(all.options, [])
-  const selected = await focusedSelection(root, ["--tooling", "scripts/owned-lock.test.mjs", "--testNamePattern=lock"])
+  const selected = await focusedSelection(root, ["--tooling", "scripts/owned-lock.test.mjs"])
   assert.deepEqual(selected.nodeFiles, ["scripts/owned-lock.test.mjs"])
-  assert.deepEqual(selected.options, ["--testNamePattern=lock"])
+  assert.deepEqual(selected.options, [])
+  await assert.rejects(focusedSelection(root, ["--tooling", "--testNamePattern=lock"]), /not test-runner options/)
+})
+test("unsupported tooling filters fail before allocating or launching a run", async (t) => {
+  const root = await fixture(t)
+  await assert.rejects(main(["focused", "--tooling", "--testNamePattern=lock"], root), /not test-runner options/)
+  await assert.rejects(readFile(join(root, ".test-runs", "latest.json")), { code: "ENOENT" })
 })
 
 async function installCoverageSmokeStub(

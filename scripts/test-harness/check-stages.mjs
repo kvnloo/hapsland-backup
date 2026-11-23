@@ -159,5 +159,6 @@ export const toolingStages = [
   ["test-harness", "--test", "scripts/test-harness/prepare-archive.test.mjs"]
 ]
 export const toolingTestFiles = [
+  qualityCoverageProvider[1],
   ...new Set(toolingStages.flatMap(([, ...args]) => args.filter((arg) => /\.test\.mjs$/.test(arg))))
 ].sort()

@@ -215,6 +215,8 @@ Task and release acceptance starts with `npm run check:fast` and the affected
 owner/consumer checks selected for the accepted behavior. Build/harness/performance
 self-tests are explicit: `npm run test:tooling` runs their inventory through the
 existing focused runner; append test files to select only changed tool owners.
+The tooling alias rejects test-name filters and other test-runner options before
+launching; deadlines and explicit file selections remain supported.
 They do not precede every product test. In the measured release run, tooling
 `build-workflow` self-tests took 307.24 seconds before product compilation; its
 development archive build then took 495.49 seconds. These are separate costs,

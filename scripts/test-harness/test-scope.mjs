@@ -18,7 +18,12 @@ export const testDiscovery = (selectedFiles, nodeTestFiles = []) => ({
     "node_modules/**",
     ...nodeTestFiles.map((file) => file.replaceAll("\\", "/")),
     ...(selectedFiles === undefined
-      ? ["scripts/game-*.test.mts", "packages/monkey-business/**", "src/canonical/session-port.test.ts"]
+      ? [
+          "scripts/game-*.test.mts",
+          "packages/monkey-business/**",
+          "src/canonical/session-port.test.ts",
+          "scripts/coverage-provider.test.mts"
+        ]
       : [])
   ]
 })

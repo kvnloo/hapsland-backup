@@ -795,13 +795,15 @@ export async function focusedSelection(root, args) {
   if (args.includes("--tooling") && files.length === 0) files = [...toolingTestFiles]
   if (!files.length)
     throw new Error("Focused checks require explicit existing test files; options alone cannot select the full suite.")
+  const other = args.filter((arg) => !files.includes(arg) && arg !== "--tooling")
+  if (args.includes("--tooling") && other.length)
+    throw new Error("Tooling self-tests accept explicit files, not test-runner options")
   for (const file of files) {
     const path = resolve(root, file)
     if (relative(root, path).startsWith(`..${sep}`) || !(await stat(path)).isFile())
       throw new Error(`Invalid focused test file: ${file}`)
   }
   // Arguments must not introduce wildcard/directory filters that silently broaden selection.
-  const other = args.filter((arg) => !files.includes(arg) && arg !== "--tooling")
   if (other.some((arg) => !arg.startsWith("-") && !/^[0-9]+$/.test(arg)))
     throw new Error("Use explicit test files and --option=value syntax for focused options.")
   return {

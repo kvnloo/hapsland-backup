@@ -21,7 +21,8 @@ test("ordinary test and release plans leave development modules optional", () =>
       ...nativeTypeScriptTests,
       "scripts/game-*.test.mts",
       "packages/monkey-business/**",
-      "src/canonical/session-port.test.ts"
+      "src/canonical/session-port.test.ts",
+      "scripts/coverage-provider.test.mts"
     ]
   })
   assert.equal(
@@ -42,6 +43,12 @@ test("ordinary test and release plans leave development modules optional", () =>
 test("explicit optional selection remains runnable without enabling the whole suite", () => {
   const files = ["scripts/game-balance-lab.test.mts", "packages/monkey-business/src/outcomes.test.ts"]
   assert.deepEqual(testDiscovery(files), { include: files, exclude: ["vendor/**", "node_modules/**"] })
+})
+test("coverage-provider self-tests are excluded by default and remain explicitly selectable", () => {
+  const file = "scripts/coverage-provider.test.mts"
+  assert.ok(testDiscovery().exclude.includes(file))
+  assert.deepEqual(testDiscovery([file]).include, [file])
+  assert.equal(testDiscovery([file]).exclude.includes(file), false)
 })
 
 test("explicit native TypeScript tests are excluded from Vitest discovery", () => {

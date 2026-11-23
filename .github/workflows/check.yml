@@ -81,6 +81,8 @@ jobs:
         run: node scripts/check-repository-assets.mjs
       - name: Typecheck
         run: npm run typecheck
+      - name: Lint current candidate
+        run: npm run lint:code
       - name: Run uninstrumented deterministic tests and candidate boundary checks
         run: npm test
       - name: Retain stage timings and complete failure logs
