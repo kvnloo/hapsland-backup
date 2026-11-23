@@ -171,8 +171,22 @@ native-host evidence below.
 
 ## Published-artifact evidence
 
-On **each** advertised platform, with Node 24.20.0 selected and the matching
-Codex CLI installed, run from the release checkout:
+Select installed and native checks for the boundaries changed by the release;
+broad package conformance is not an automatic repetition of already established
+same-byte witnesses. On **each** advertised platform, retain the selected
+conclusive evidence and its host version and configuration.
+
+Installed and native checks completed before publication on the exact audited
+archive may be reused after the downloaded registry archive's SHA-256 is verified
+identical, with the same host version and configuration. Record both the original
+local-archive evidence and the registry checksum verification; an origin-label
+change alone does not require repeating the check. Never reuse an aborted or
+inconclusive run, different archive bytes, or evidence from a changed host version
+or configuration. This does not permit promoting a development archive in place
+of a fresh `release:prepare` audit.
+
+When selected package conformance evidence is needed, with Node 24.20.0 selected
+and the matching Codex CLI installed, run from the release checkout:
 
 ```sh
 npm run conformance:package -- --registry-artifact --expected-sha256=ARCHIVE_SHA256 --real-codex --write-evidence
@@ -191,9 +205,9 @@ Darwin native credential qualification is skipped for this release. Ordinary
 package conformance records it as not requested; `--secret-service` refuses on
 Darwin before OS operations. These results make no Keychain lifecycle claim.
 
-A live Jev review-and-repair check uses the exact registry archive too. Run
-the supervised synthetic demo on each platform with a dedicated Codex home,
-after its offline preview and native trust review:
+A selected live Jev review-and-repair check uses the same exact audited archive.
+When a new witness is needed, run the supervised synthetic demo on each platform
+with a dedicated Codex home, after its offline preview and native trust review:
 
 ```sh
 REVIEW_LIVE_CODEX_HOME=/absolute/path/to/dedicated-codex-home npm run conformance:first-review-live -- --live --registry-artifact --expected-sha256=ARCHIVE_SHA256 --supervised-trust --write-evidence
@@ -215,8 +229,9 @@ timing evidence. This is a purposeful small release check; other live checks wit
 validation can use hundreds of Jev calls when the question warrants them.
 Keep ordinary automated tests offline and deterministic.
 
-Do not advertise a platform until its registry artifact and conclusive live
-review-and-repair evidence pass. If a published version fails validation,
+Do not advertise a platform until its registry bytes are verified and its required
+installed and conclusive live review-and-repair evidence pass, including eligible
+prepublication evidence as described above. If a published version fails validation,
 deprecate it, pause guidance, preserve user state, and release a verified patch
 version. The current npm session must be used for the deprecation command;
 capture the reason and recovery instructions in the release record.
